@@ -1,0 +1,7 @@
+tmp/
+stats/
+stats_test_temp/
+venv/
+__pycache__/
+*.pyc
+.env
