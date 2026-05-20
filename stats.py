@@ -24,7 +24,7 @@ _LOG_FIELDS = [
 _LLM_FIELDS = [
     "timestamp", "trigger", "ttft_ms", "total_ms",
     "input_tokens", "output_tokens", "cost_usd",
-    "screenshot_file", "response_file", "response_preview",
+    "screenshot_file", "response_file", "response_preview", "reaction",
 ]
 
 
@@ -70,8 +70,9 @@ def log_llm_call(
     response_file = ts.strftime("%Y%m%d_%H%M%S_%f") + ".txt"
     (RESPONSES_DIR / response_file).write_text(response_text, encoding="utf-8")
 
+    ts_key = ts.isoformat()
     row = {
-        "timestamp": ts.isoformat(),
+        "timestamp": ts_key,
         "trigger": trigger,
         "ttft_ms": round(ttft_ms, 1),
         "total_ms": round(total_ms, 1),
@@ -81,10 +82,34 @@ def log_llm_call(
         "screenshot_file": screenshot_file,
         "response_file": response_file,
         "response_preview": response_text[:100].replace("\n", " "),
+        "reaction": "",
     }
     with open(LLM_LOG_FILE, "a", newline="") as f:
         csv.DictWriter(f, fieldnames=_LLM_FIELDS).writerow(row)
     print(f"[stats] {trigger}: ttft={ttft_ms:.0f}ms total={total_ms:.0f}ms cost=${cost:.4f}")
+    return ts_key
+
+
+def update_llm_reaction(ts_key: str, reaction: str):
+    """Find the row with the given timestamp and update its reaction field."""
+    if not LLM_LOG_FILE.exists() or not ts_key:
+        return
+    with open(LLM_LOG_FILE, "r", newline="") as f:
+        rows = list(csv.DictReader(f))
+    updated = False
+    for row in rows:
+        row.pop(None, None)          # drop overflow key from old-schema rows
+        row.setdefault("reaction", "")  # fill missing reaction for old rows
+        if row.get("timestamp") == ts_key:
+            row["reaction"] = reaction
+            updated = True
+    if not updated:
+        return
+    with open(LLM_LOG_FILE, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=_LLM_FIELDS, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f"[stats] reaction={reaction!r} logged for {ts_key}")
 
 
 def log_activity_call(

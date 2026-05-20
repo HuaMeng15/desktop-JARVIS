@@ -15,7 +15,7 @@ from capture import capture_screen
 from display import show_overlay
 from monitor import FrameMonitor
 from response import get_response, stream_response
-from stats import log_activity_call, log_llm_call
+from stats import log_activity_call, log_llm_call, update_llm_reaction
 
 MONITOR_INDEX = 1
 STATIC_THRESHOLD = 5       # seconds of dHash==0 before stuck-screen trigger
@@ -268,10 +268,12 @@ def main():
                 print(f"Stream error: {e}")
                 continue
 
+            log_key = [None]
+
             def on_stream_done(stats, text):
                 in_tok, out_tok, ttft, total = stats
-                log_llm_call("stuck", ttft, total, in_tok, out_tok,
-                             response_text=text, image_bytes=triggered_bytes)
+                log_key[0] = log_llm_call("stuck", ttft, total, in_tok, out_tok,
+                                          response_text=text, image_bytes=triggered_bytes)
 
             def on_more():
                 try:
@@ -289,174 +291,9 @@ def main():
                     text = f"Error: {e}"
                 return text
 
-            show_overlay(stream, on_more=on_more, on_chat=on_chat, on_stream_done=on_stream_done)
-            frame_monitor.reset()
-            state[0] = State.CAPTURING
-
-        elapsed = time.monotonic() - loop_start
-        sleep_time = 1.0 - elapsed
-        if sleep_time > 0:
-            time.sleep(sleep_time)
-
-
-if __name__ == "__main__":
-    main()
-
-
-MONITOR_INDEX = 1
-STATIC_THRESHOLD = 5  # seconds of dHash==0 before triggering LLM
-
-STUCK_PROMPT = (
-    "I have been on this screen without any activity for over 5 seconds. "
-    "First, in one sentence, summarize what I appear to be doing or working on. "
-    "Then provide 2-3 concise, specific, actionable tips for what I might do next. "
-    "Be specific to what you see — avoid generic advice."
-)
-
-MORE_PROMPT = (
-    "Give more detailed advice about what I should do on this screen. "
-    "Expand on your previous suggestions with concrete next steps."
-)
-
-
-class State(Enum):
-    CAPTURING = auto()
-    OVERLAY = auto()
-    LOCKED = auto()       # screen locked — wait for screenIsUnlocked notification
-    DISPLAY_SLEEP = auto() # display off — probe to detect wake
-
-
-def _start_lock_listener(state_ref: list):
-    """Listen for macOS screen lock/unlock via distributed notifications."""
-    try:
-        from Foundation import NSDistributedNotificationCenter, NSRunLoop, NSDate
-
-        center = NSDistributedNotificationCenter.defaultCenter()
-
-        def on_lock(_):
-            print("Screen locked — pausing capture.")
-            state_ref[0] = State.LOCKED
-
-        def on_unlock(_):
-            print("Screen unlocked — resuming capture.")
-            if state_ref[0] == State.LOCKED:
-                state_ref[0] = State.CAPTURING
-
-        center.addObserverForName_object_queue_usingBlock_(
-            "com.apple.screenIsLocked", None, None, on_lock)
-        center.addObserverForName_object_queue_usingBlock_(
-            "com.apple.screenIsUnlocked", None, None, on_unlock)
-
-        loop = NSRunLoop.currentRunLoop()
-        while True:
-            loop.runUntilDate_(NSDate.dateWithTimeIntervalSinceNow_(1.0))
-    except Exception as e:
-        print(f"Lock listener unavailable: {e}")
-
-
-def main():
-    state = [State.CAPTURING]
-    frame_monitor = FrameMonitor()
-    static_count = 0
-    triggered_b64 = [None]  # screenshot that triggered the overlay
-
-    lock_thread = threading.Thread(target=_start_lock_listener, args=(state,), daemon=True)
-    lock_thread.start()
-
-    print("JARVIS daemon started. Press Ctrl+C to stop.")
-
-    while True:
-        loop_start = time.monotonic()
-
-        if state[0] == State.OVERLAY:
-            time.sleep(1)
-            continue
-
-        if state[0] == State.LOCKED:
-            # Locked via notification — wait for screenIsUnlocked, no probing needed
-            time.sleep(1)
-            continue
-
-        if state[0] == State.DISPLAY_SLEEP:
-            # Display slept — probe every 2s to detect wake
-            try:
-                capture_screen(monitor_index=MONITOR_INDEX)
-                print("Display woke — resuming capture.")
-                state[0] = State.CAPTURING
-                frame_monitor.reset()
-            except Exception:
-                pass
-            time.sleep(2)
-            continue
-
-        # Capture
-        try:
-            image_b64, image_bytes = capture_screen(monitor_index=MONITOR_INDEX)
-        except IndexError:
-            # Monitor unavailable — display slept (not locked)
-            print("Display slept — pausing capture.")
-            state[0] = State.DISPLAY_SLEEP
-            time.sleep(2)
-            continue
-        except Exception as e:
-            print(f"Capture error: {e}")
-            time.sleep(1)
-            continue
-
-        ts = datetime.now()
-        name = ts.strftime("%Y%m%d_%H%M%S_%f") + ".png"
-        img = Image.open(io.BytesIO(image_bytes))
-
-        frame_monitor.save_frame(image_bytes, name)
-        score, psnr = frame_monitor.update(img, name)
-
-        if score == 0:
-            static_count += 1
-        else:
-            static_count = 0
-
-        psnr_str = "inf" if psnr == float("inf") else f"{psnr:.1f}"
-        print(f"[{ts.strftime('%H:%M:%S')}] dHash={score} PSNR={psnr_str} static={static_count}s")
-
-        if static_count >= STATIC_THRESHOLD and state[0] == State.CAPTURING:
-            state[0] = State.OVERLAY
-            static_count = 0
-            triggered_b64[0] = image_b64
-            triggered_bytes = image_bytes  # keep raw bytes for stats
-
-            print("Static screen detected — streaming to overlay...")
-            try:
-                stream = stream_response(image_b64, prompt=STUCK_PROMPT)
-            except Exception as e:
-                state[0] = State.CAPTURING
-                print(f"Stream error: {e}")
-                continue
-
-            accumulated_text = [""]
-
-            def on_stream_done(stats, text):
-                in_tok, out_tok, ttft, total = stats
-                log_llm_call("stuck", ttft, total, in_tok, out_tok,
-                             response_text=text,
-                             image_bytes=triggered_bytes)
-
-            def on_more():
-                try:
-                    text, in_tok, out_tok, ttft, total = get_response(triggered_b64[0], prompt=MORE_PROMPT)
-                    log_llm_call("more", ttft, total, in_tok, out_tok, response_text=text)
-                except Exception as e:
-                    text = f"Error: {e}"
-                return text
-
-            def on_chat(msg: str):
-                try:
-                    text, in_tok, out_tok, ttft, total = get_response(triggered_b64[0], prompt=msg)
-                    log_llm_call("chat", ttft, total, in_tok, out_tok, response_text=text)
-                except Exception as e:
-                    text = f"Error: {e}"
-                return text
-
-            show_overlay(stream, on_more=on_more, on_chat=on_chat, on_stream_done=on_stream_done)
+            reaction = show_overlay(stream, on_more=on_more, on_chat=on_chat, on_stream_done=on_stream_done)
+            if log_key[0]:
+                update_llm_reaction(log_key[0], reaction)
             frame_monitor.reset()
             state[0] = State.CAPTURING
 
