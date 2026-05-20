@@ -33,6 +33,29 @@ ACTIVITY_LOG_FILE = STATS_DIR / "activity_calls.csv"
 _ACTIVITY_FIELDS = ["timestamp", "task_id", "app", "summary", "screenshot_file", "total_ms", "input_tokens", "output_tokens", "cost_usd"]
 
 
+def _migrate_csv(path: Path, fieldnames: list[str]):
+    """Rewrite path with the given fieldnames if the header is out of date."""
+    if not path.exists():
+        return
+    with open(path, "r", newline="") as f:
+        rows = list(csv.DictReader(f))
+    # Check whether the stored header already matches
+    with open(path, "r", newline="") as f:
+        stored_header = next(csv.reader(f), [])
+    if stored_header == fieldnames:
+        return
+    # Rewrite: normalize each row (drop None overflow keys, fill missing fields)
+    for row in rows:
+        row.pop(None, None)
+        for col in fieldnames:
+            row.setdefault(col, "")
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f"[stats] migrated {path.name} to new schema")
+
+
 def _ensure_dirs():
     SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
     RESPONSES_DIR.mkdir(parents=True, exist_ok=True)
@@ -42,9 +65,13 @@ def _ensure_dirs():
     if not LLM_LOG_FILE.exists():
         with open(LLM_LOG_FILE, "w", newline="") as f:
             csv.DictWriter(f, fieldnames=_LLM_FIELDS).writeheader()
+    else:
+        _migrate_csv(LLM_LOG_FILE, _LLM_FIELDS)
     if not ACTIVITY_LOG_FILE.exists():
         with open(ACTIVITY_LOG_FILE, "w", newline="") as f:
             csv.DictWriter(f, fieldnames=_ACTIVITY_FIELDS).writeheader()
+    else:
+        _migrate_csv(ACTIVITY_LOG_FILE, _ACTIVITY_FIELDS)
 
 
 def log_llm_call(
