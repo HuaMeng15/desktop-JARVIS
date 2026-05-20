@@ -86,7 +86,9 @@ def _query_activity_background(image_bytes: bytes, tracker: ActivityTracker):
             app = data.get("app", "Unknown")
             summary = data.get("summary", text[:100])
             record = tracker.upsert(img, image_bytes, app, summary)
-            log_activity_call(record.id, total_ms, in_tok, out_tok)
+            log_activity_call(record.id, total_ms, in_tok, out_tok,
+                              app=app, summary=summary,
+                              screenshot_file=record.screenshot_file)
             print(f"[activity] {app}: {summary}")
         except Exception as e:
             print(f"[activity] query failed: {e}")

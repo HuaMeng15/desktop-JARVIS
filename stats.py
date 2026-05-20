@@ -30,7 +30,7 @@ _LLM_FIELDS = [
 
 ACTIVITY_LOG_FILE = STATS_DIR / "activity_calls.csv"
 
-_ACTIVITY_FIELDS = ["timestamp", "task_id", "total_ms", "input_tokens", "output_tokens", "cost_usd"]
+_ACTIVITY_FIELDS = ["timestamp", "task_id", "app", "summary", "screenshot_file", "total_ms", "input_tokens", "output_tokens", "cost_usd"]
 
 
 def _ensure_dirs():
@@ -92,6 +92,9 @@ def log_activity_call(
     total_ms: float,
     input_tokens: int,
     output_tokens: int,
+    app: str = "",
+    summary: str = "",
+    screenshot_file: str = "",
 ):
     """Append one row to stats/activity_calls.csv for a silent background LLM query."""
     _ensure_dirs()
@@ -100,6 +103,9 @@ def log_activity_call(
     row = {
         "timestamp": datetime.now().isoformat(),
         "task_id": task_id,
+        "app": app,
+        "summary": summary,
+        "screenshot_file": screenshot_file,
         "total_ms": round(total_ms, 1),
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
@@ -107,5 +113,5 @@ def log_activity_call(
     }
     with open(ACTIVITY_LOG_FILE, "a", newline="") as f:
         csv.DictWriter(f, fieldnames=_ACTIVITY_FIELDS).writerow(row)
-    print(f"[activity] task={task_id[:8]} total={total_ms:.0f}ms cost=${cost:.4f}")
+    print(f"[activity] task={task_id[:8]} app={app} total={total_ms:.0f}ms cost=${cost:.4f}")
 

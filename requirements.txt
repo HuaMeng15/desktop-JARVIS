@@ -1,0 +1,6 @@
+anthropic==0.103.0
+mss==10.2.0
+Pillow==12.2.0
+ImageHash==4.3.2
+numpy==2.4.6
+pyobjc-framework-Cocoa==12.1
