@@ -1,111 +1,110 @@
-"""Desktop pet: persistent tkinter widget, bottom-right corner.
-
-Call run_pet_loop(on_capture, paused_ref, ui_queue) on the MAIN thread.
-The JARVIS loop posts callables to ui_queue; the pet's after() loop drains it.
-"""
+"""Desktop pet: pure AppKit NSWindow with transparent background."""
 
 import queue
-import tkinter as tk
+import threading
+from pathlib import Path
 
-PET_SIZE = 48
-PET_BG = "#2d2d2d"
-PET_PAUSED_BG = "#8b0000"
-PET_FG = "#ffffff"
+PET_SIZE = 100
+_ICON_DIR = Path(__file__).parent / "src" / "icons"
 
 
-def run_pet_loop(on_capture, paused_ref: list, ui_queue: queue.Queue) -> None:
-    """Create the pet window and run tkinter mainloop. Blocks forever."""
-    root = tk.Tk()
-    root.overrideredirect(True)
-    root.attributes("-topmost", True)
-    root.attributes("-alpha", 0.85)
-    root.resizable(False, False)
+def run_pet_loop(on_capture, paused_ref: list, ui_queue: queue.Queue,
+                 root_ref: list | None = None, on_pause=None) -> None:
+    from AppKit import (NSApplication, NSApplicationActivationPolicyAccessory,
+                        NSBorderlessWindowMask, NSColor, NSImage, NSImageView,
+                        NSMakeRect, NSWindow, NSBackingStoreBuffered, NSScreen,
+                        NSView, NSMenu, NSMenuItem)
+    from Foundation import NSTimer, NSObject
+    import objc
 
-    try:
-        from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
-        NSApplication.sharedApplication().setActivationPolicy_(
-            NSApplicationActivationPolicyAccessory)
-    except Exception:
-        pass
+    NSApplication.sharedApplication()
+    NSApplication.sharedApplication().setActivationPolicy_(
+        NSApplicationActivationPolicyAccessory)
 
-    sw = root.winfo_screenwidth()
-    sh = root.winfo_screenheight()
-    root.geometry(f"{PET_SIZE}x{PET_SIZE}+{sw - PET_SIZE - 12}+{sh - PET_SIZE - 12}")
+    sw = int(NSScreen.mainScreen().frame().size.width)
+    dock_h = int(NSScreen.mainScreen().visibleFrame().origin.y)
+    ax = sw - PET_SIZE - 30
+    ay = dock_h + 30
 
-    canvas = tk.Canvas(root, width=PET_SIZE, height=PET_SIZE,
-                       highlightthickness=0, cursor="hand2")
-    canvas.pack()
+    win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+        NSMakeRect(ax, ay, PET_SIZE, PET_SIZE),
+        NSBorderlessWindowMask, NSBackingStoreBuffered, False)
+    win.setBackgroundColor_(NSColor.clearColor())
+    win.setOpaque_(False)
+    win.setLevel_(3)  # NSFloatingWindowLevel
 
-    def _draw():
-        canvas.delete("all")
-        bg = PET_PAUSED_BG if paused_ref[0] else PET_BG
-        r = PET_SIZE // 2
-        canvas.create_oval(2, 2, PET_SIZE - 2, PET_SIZE - 2,
-                            fill=bg, outline="#555555", width=1)
-        canvas.create_text(r, r, text="⏸" if paused_ref[0] else "J",
-                           fill=PET_FG, font=("SF Pro Display", 16, "bold"))
+    if root_ref is not None:
+        root_ref[0] = win
 
-    _draw()
-
-    # Drag
     _drag = {}
+    _delegate_ref = []
 
-    def _drag_start(e):
-        _drag["x"] = e.x_root
-        _drag["y"] = e.y_root
+    class _MenuDelegate(NSObject):
+        def togglePause_(self, s):
+            paused_ref[0] = not paused_ref[0]
+            if on_pause:
+                on_pause(paused_ref[0])
+        def quit_(self, s):
+            import os; os._exit(0)
 
-    def _drag_move(e):
-        dx = e.x_root - _drag["x"]
-        dy = e.y_root - _drag["y"]
-        root.geometry(f"+{root.winfo_x() + dx}+{root.winfo_y() + dy}")
-        _drag["x"] = e.x_root
-        _drag["y"] = e.y_root
+    _menu_delegate = _MenuDelegate.alloc().init()
+    _delegate_ref.append(_menu_delegate)
 
-    canvas.bind("<ButtonPress-1>", _drag_start)
-    canvas.bind("<B1-Motion>", _drag_move)
+    class _PetView(NSView):
+        def acceptsFirstMouse_(self, event): return True
+        def mouseDownCanMoveWindow(self): return True
 
-    def _on_left_release(e):
-        if abs(e.x_root - _drag.get("x", e.x_root)) < 5 and \
-           abs(e.y_root - _drag.get("y", e.y_root)) < 5:
-            root.after(1000, on_capture)
+        def mouseDown_(self, event):
+            _drag['wx'] = win.frame().origin.x
+            _drag['wy'] = win.frame().origin.y
 
-    canvas.bind("<ButtonRelease-1>", _on_left_release)
+        def mouseUp_(self, event):
+            dwx = win.frame().origin.x - _drag.get('wx', win.frame().origin.x)
+            dwy = win.frame().origin.y - _drag.get('wy', win.frame().origin.y)
+            if abs(dwx) < 5 and abs(dwy) < 5:
+                threading.Timer(1.0, on_capture).start()
 
-    # Right-click menu
-    menu = tk.Menu(root, tearoff=0, bg=PET_BG, fg=PET_FG,
-                   activebackground="#555555", activeforeground=PET_FG,
-                   font=("SF Pro Display", 11))
+        def rightMouseDown_(self, event):
+            menu = NSMenu.alloc().init()
+            lbl = "Resume" if paused_ref[0] else "Pause"
+            i1 = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(lbl, "togglePause:", "")
+            i1.setTarget_(_menu_delegate)
+            i2 = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Quit", "quit:", "")
+            i2.setTarget_(_menu_delegate)
+            menu.addItem_(i1)
+            menu.addItem_(NSMenuItem.separatorItem())
+            menu.addItem_(i2)
+            NSMenu.popUpContextMenu_withEvent_forView_(menu, event, self)
 
-    def _toggle_pause():
-        paused_ref[0] = not paused_ref[0]
-        menu.entryconfigure(0, label="Resume" if paused_ref[0] else "Pause")
-        _draw()
-        print(f"[pet] {'paused' if paused_ref[0] else 'resumed'}")
+    view = _PetView.alloc().initWithFrame_(NSMakeRect(0, 0, PET_SIZE, PET_SIZE))
+    view.setWantsLayer_(True)
+    view.layer().setBackgroundColor_(None)
 
-    menu.add_command(label="Pause", command=_toggle_pause)
-    menu.add_separator()
-    menu.add_command(label="Quit", command=lambda: __import__("os")._exit(0))
+    ns_img = NSImage.alloc().initWithContentsOfFile_(str(_ICON_DIR / "jarvis.heic"))
+    img_view = NSImageView.alloc().initWithFrame_(NSMakeRect(0, 0, PET_SIZE, PET_SIZE))
+    img_view.setImage_(ns_img)
+    img_view.setImageScaling_(3)
+    img_view.setIgnoreHitTest_(True)  # pass mouse events through to _PetView
+    view.addSubview_(img_view)
 
-    def _on_right_click(e):
-        menu.entryconfigure(0, label="Resume" if paused_ref[0] else "Pause")
-        try:
-            menu.tk_popup(e.x_root, e.y_root)
-        finally:
-            menu.grab_release()
+    win.setContentView_(view)
 
-    canvas.bind("<Button-2>", _on_right_click)
-    canvas.bind("<Button-3>", _on_right_click)
+    # --- UI queue drain via NSTimer ---
+    class _DrainTarget(NSObject):
+        def drain_(self, _timer):
+            try:
+                while True:
+                    ui_queue.get_nowait()()
+            except queue.Empty:
+                pass
 
-    # Drain ui_queue: run callables posted from the JARVIS background thread
-    def _drain():
-        try:
-            while True:
-                fn = ui_queue.get_nowait()
-                fn()
-        except queue.Empty:
-            pass
-        _draw()
-        root.after(200, _drain)
+    drain_target = _DrainTarget.alloc().init()
+    NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+        0.2, drain_target, "drain:", None, True)
 
-    root.after(200, _drain)
-    root.mainloop()
+    win.orderFrontRegardless()
+
+    import signal
+    signal.signal(signal.SIGINT, lambda *_: NSApplication.sharedApplication().terminate_(None))
+
+    NSApplication.sharedApplication().run()

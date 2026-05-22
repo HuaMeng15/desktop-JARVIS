@@ -148,7 +148,6 @@ class TestStats:
         monkeypatch.setattr(stats, "RESPONSES_DIR", tmp_path / "responses")
         monkeypatch.setattr(stats, "LLM_LOG_FILE", tmp_path / "llm_calls.csv")
         monkeypatch.setattr(stats, "ACTIVITY_LOG_FILE", tmp_path / "activity_calls.csv")
-        monkeypatch.setattr(stats, "LOG_FILE", tmp_path / "log.csv")
         return stats
 
     def _rows(self, s):

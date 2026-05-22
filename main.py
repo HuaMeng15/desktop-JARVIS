@@ -106,12 +106,14 @@ def _format_recap(records) -> str:
     return "\n".join(lines)
 
 
-def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list):
+def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
+         tk_root_ref: list | None = None, static_count: list | None = None):
     state = [State.CAPTURING]
     # paused is passed in (shared with pet)
     frame_monitor = FrameMonitor()
     activity_tracker = ActivityTracker()
-    static_count = 0
+    if static_count is None:
+        static_count = [0]
     triggered_b64 = [None]
     pending_hint = queue.Queue()  # HintResult posted from background thread
 
@@ -131,10 +133,13 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list):
 
     def _show_overlay_main(text, on_more, on_chat, on_stream_done=None):
         """Post show_overlay to the main thread and block until it returns."""
+        from pet import PET_SIZE
         result = queue.Queue()
+        parent = tk_root_ref[0] if tk_root_ref else None
         ui_queue.put(lambda: result.put(
             show_overlay(text, on_more=on_more, on_chat=on_chat,
-                         on_stream_done=on_stream_done)))
+                         on_stream_done=on_stream_done, parent=parent,
+                         pet_size=PET_SIZE)))
         return result.get()
 
     def _on_pet_capture():
@@ -187,7 +192,8 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list):
                 def on_chat(msg: str, b64=h_b64):
                     try:
                         text, in_tok, out_tok, ttft, total = get_response(b64, prompt=msg)
-                        log_llm_call("chat", ttft, total, in_tok, out_tok, response_text=text)
+                        log_llm_call("chat", ttft, total, in_tok, out_tok,
+                                     response_text=text, selected_text=msg)
                     except Exception as e:
                         text = f"Error: {e}"
                     return text
@@ -233,7 +239,8 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list):
                         return "No screenshot available for follow-up."
                     try:
                         text, in_tok, out_tok, ttft, total = get_response(b64, prompt=msg)
-                        log_llm_call("chat", ttft, total, in_tok, out_tok, response_text=text)
+                        log_llm_call("chat", ttft, total, in_tok, out_tok,
+                                     response_text=text, selected_text=msg)
                     except Exception as e:
                         text = f"Error: {e}"
                     return text
@@ -248,6 +255,10 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list):
             continue
 
         if state[0] == State.LOCKED:
+            time.sleep(1)
+            continue
+
+        if paused[0]:
             time.sleep(1)
             continue
 
@@ -283,12 +294,12 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list):
         score, psnr = frame_monitor.update(img, name)
 
         if score == 0:
-            static_count += 1
+            static_count[0] += 1
         else:
-            static_count = 0
+            static_count[0] = 0
 
         psnr_str = "inf" if psnr == float("inf") else f"{psnr:.1f}"
-        print(f"[{ts.strftime('%H:%M:%S')}] dHash={score} PSNR={psnr_str} static={static_count}s")
+        print(f"[{ts.strftime('%H:%M:%S')}] dHash={score} PSNR={psnr_str} static={static_count[0]}s")
 
         # --- Context-switch detection ---
         if score > SWITCH_THRESHOLD and not in_post_switch[0]:
@@ -350,9 +361,9 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list):
                     threading.Thread(target=_run_selection_hint, daemon=True).start()
 
         # --- Stuck-screen detection ---
-        if static_count >= STATIC_THRESHOLD and state[0] == State.CAPTURING and not paused[0]:
+        if static_count[0] >= STATIC_THRESHOLD and state[0] == State.CAPTURING and not paused[0]:
             state[0] = State.OVERLAY
-            static_count = 0
+            static_count[0] = 0
             triggered_b64[0] = image_b64
             triggered_bytes = image_bytes
             _cx, _cy, _sw, _sh = cx, cy, screen_w, screen_h
@@ -380,14 +391,18 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list):
 if __name__ == "__main__":
     ui_queue: queue.Queue = queue.Queue()
     paused_shared = [False]
-    on_capture_ref = [lambda: None]  # filled in by main() once ready
+    on_capture_ref = [lambda: None]
+    tk_root_ref = [None]
+    static_count_shared = [0]  # shared so on_pause can reset it
 
     t = threading.Thread(
-        target=main, args=(ui_queue, paused_shared, on_capture_ref), daemon=True)
+        target=main, args=(ui_queue, paused_shared, on_capture_ref, tk_root_ref, static_count_shared), daemon=True)
     t.start()
 
     run_pet_loop(
         on_capture=lambda: on_capture_ref[0](),
         paused_ref=paused_shared,
         ui_queue=ui_queue,
+        root_ref=tk_root_ref,
+        on_pause=lambda is_paused: static_count_shared.__setitem__(0, 0),
     )

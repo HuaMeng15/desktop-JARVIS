@@ -112,11 +112,19 @@ def _darken(hex_color):
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
-def show_overlay(text_or_stream, on_more, on_chat, on_stream_done=None) -> str:
-    """Display overlay. Returns reaction string ('good'/'dismiss'/etc)."""
+def show_overlay(text_or_stream, on_more, on_chat, on_stream_done=None,
+                 parent=None, pet_size: int = 0) -> str:
+    """Display overlay. Returns reaction string ('good'/'dismiss'/etc).
+
+    If parent is given (a tk.Tk root), uses Toplevel + wait_window instead of
+    a new Tk + mainloop, so it can be called from within an existing event loop.
+    """
 
     reaction = ["dismiss"]
-    root = tk.Tk()
+    if parent is not None:
+        root = tk.Toplevel(parent)
+    else:
+        root = tk.Tk()
     root.withdraw()
     root.title("")
     root.attributes("-topmost", True)
@@ -179,13 +187,15 @@ def show_overlay(text_or_stream, on_more, on_chat, on_stream_done=None) -> str:
 
         new_h = max(MIN_H, min(MAX_H, HEADER_H + content_h + BOTTOM_H))
         WIN_H[0] = new_h
+        margin = pet_size + 16 if pet_size else 24
         x = screen_w - WIN_W - 24
-        y = screen_h - new_h - 100
+        y = screen_h - new_h - margin
         root.geometry(f"{WIN_W}x{new_h}+{x}+{y}")
         text_frame.place(x=0, y=HEADER_H, width=WIN_W, height=new_h - HEADER_H - BOTTOM_H)
         bottom.place(x=RADIUS, y=new_h - BOTTOM_H + 2, width=WIN_W - RADIUS*2)
 
-    root.geometry(f"{WIN_W}x{WIN_H[0]}+{screen_w - WIN_W - 24}+{screen_h - WIN_H[0] - 100}")
+    margin = pet_size + 16 if pet_size else 24
+    root.geometry(f"{WIN_W}x{WIN_H[0]}+{screen_w - WIN_W - 24}+{screen_h - WIN_H[0] - margin}")
 
     # ── Drag support ──────────────────────────────────────────────────────────
     _drag = {"x": 0, "y": 0}
@@ -370,8 +380,7 @@ def show_overlay(text_or_stream, on_more, on_chat, on_stream_done=None) -> str:
         reaction[0] = r
         closed[0] = True
         try:
-            root.withdraw()
-            root.after(100, root.destroy)
+            root.destroy()
         except Exception:
             pass
 
@@ -406,5 +415,8 @@ def show_overlay(text_or_stream, on_more, on_chat, on_stream_done=None) -> str:
     for label, cmd in [("More", on_more_click), ("Chat", on_chat_click), ("Dismiss", lambda: _close("dismiss"))]:
         _pill_button(right, label, cmd, BTN_BG, BTN_FG).pack(side=tk.LEFT, padx=(0, 6))
 
-    root.mainloop()
+    if parent is not None:
+        root.wait_window()
+    else:
+        root.mainloop()
     return reaction[0]

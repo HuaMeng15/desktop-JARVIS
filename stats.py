@@ -7,7 +7,6 @@ from pathlib import Path
 STATS_DIR = Path(__file__).parent / "stats"
 SCREENSHOTS_DIR = STATS_DIR / "screenshots"
 RESPONSES_DIR = STATS_DIR / "responses"
-LOG_FILE = STATS_DIR / "log.csv"
 LLM_LOG_FILE = STATS_DIR / "llm_calls.csv"
 
 # claude-opus-4-6 pricing (per million tokens)
@@ -61,9 +60,6 @@ def _migrate_csv(path: Path, fieldnames: list[str]):
 def _ensure_dirs():
     SCREENSHOTS_DIR.mkdir(parents=True, exist_ok=True)
     RESPONSES_DIR.mkdir(parents=True, exist_ok=True)
-    if not LOG_FILE.exists():
-        with open(LOG_FILE, "w", newline="") as f:
-            csv.DictWriter(f, fieldnames=_LOG_FIELDS).writeheader()
     if not LLM_LOG_FILE.exists():
         with open(LLM_LOG_FILE, "w", newline="") as f:
             csv.DictWriter(f, fieldnames=_LLM_FIELDS).writeheader()
