@@ -24,6 +24,7 @@ _LOG_FIELDS = [
 _LLM_FIELDS = [
     "timestamp", "trigger", "ttft_ms", "total_ms",
     "input_tokens", "output_tokens", "cost_usd",
+    "cursor_x", "cursor_y",
     "screenshot_file", "response_file", "response_preview", "reaction",
 ]
 
@@ -82,6 +83,8 @@ def log_llm_call(
     output_tokens: int,
     response_text: str = "",
     image_bytes: bytes | None = None,
+    cursor_x: int | None = None,
+    cursor_y: int | None = None,
 ):
     """Save screenshot + response file, append row to stats/llm_calls.csv."""
     _ensure_dirs()
@@ -92,7 +95,21 @@ def log_llm_call(
     screenshot_file = ""
     if image_bytes is not None:
         screenshot_file = ts.strftime("%Y%m%d_%H%M%S_%f") + ".png"
-        (SCREENSHOTS_DIR / screenshot_file).write_bytes(image_bytes)
+        img_path = SCREENSHOTS_DIR / screenshot_file
+        if cursor_x is not None and cursor_y is not None:
+            # Draw a red crosshair at the cursor position
+            from PIL import Image as PILImage, ImageDraw
+            img = PILImage.open(__import__("io").BytesIO(image_bytes)).convert("RGB")
+            draw = ImageDraw.Draw(img)
+            r = 10
+            draw.line([(cursor_x - r, cursor_y), (cursor_x + r, cursor_y)], fill="red", width=2)
+            draw.line([(cursor_x, cursor_y - r), (cursor_x, cursor_y + r)], fill="red", width=2)
+            draw.ellipse([(cursor_x - r, cursor_y - r), (cursor_x + r, cursor_y + r)], outline="red", width=2)
+            buf = __import__("io").BytesIO()
+            img.save(buf, format="PNG")
+            img_path.write_bytes(buf.getvalue())
+        else:
+            img_path.write_bytes(image_bytes)
 
     response_file = ts.strftime("%Y%m%d_%H%M%S_%f") + ".txt"
     (RESPONSES_DIR / response_file).write_text(response_text, encoding="utf-8")
@@ -106,6 +123,8 @@ def log_llm_call(
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "cost_usd": f"{cost:.6f}",
+        "cursor_x": cursor_x if cursor_x is not None else "",
+        "cursor_y": cursor_y if cursor_y is not None else "",
         "screenshot_file": screenshot_file,
         "response_file": response_file,
         "response_preview": response_text[:100].replace("\n", " "),

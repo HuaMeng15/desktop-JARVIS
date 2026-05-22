@@ -3,6 +3,7 @@
 import base64
 import io
 import json
+import queue
 import threading
 import time
 from datetime import datetime
@@ -14,19 +15,12 @@ from activity import ActivityTracker
 from capture import capture_screen
 from display import show_overlay
 from monitor import FrameMonitor
-from response import get_response, stream_response
+from response import get_hint, get_response
 from stats import log_activity_call, log_llm_call, update_llm_reaction
 
 MONITOR_INDEX = 1
 STATIC_THRESHOLD = 5       # seconds of dHash==0 before stuck-screen trigger
 SWITCH_THRESHOLD = 20      # dHash score above this = context switch
-
-STUCK_PROMPT = (
-    "I have been on this screen without any activity for over 5 seconds. "
-    "First, in one sentence, summarize what I appear to be doing or working on. "
-    "Then provide 2-3 concise, specific, actionable tips for what I might do next. "
-    "Be specific to what you see — avoid generic advice."
-)
 
 MORE_PROMPT = (
     "Give more detailed advice about what I should do on this screen. "
@@ -117,6 +111,7 @@ def main():
     activity_tracker = ActivityTracker()
     static_count = 0
     triggered_b64 = [None]
+    pending_hint = queue.Queue()  # HintResult posted from background thread
 
     # Context-switch tracking
     prev_image_bytes = [None]
@@ -132,6 +127,42 @@ def main():
 
     while True:
         loop_start = time.monotonic()
+
+        # Check for pending hint result (from background get_hint thread)
+        try:
+            hint, h_b64, h_bytes, h_cx, h_cy = pending_hint.get_nowait()
+            if hint.needs_hint and hint.confidence != "low":
+                log_key = log_llm_call("stuck", hint.total_ms, hint.total_ms,
+                                       hint.input_tokens, hint.output_tokens,
+                                       response_text=hint.hint, image_bytes=h_bytes,
+                                       cursor_x=h_cx, cursor_y=h_cy)
+
+                def on_more(b64=h_b64):
+                    try:
+                        text, in_tok, out_tok, ttft, total = get_response(b64, prompt=MORE_PROMPT)
+                        log_llm_call("more", ttft, total, in_tok, out_tok, response_text=text)
+                    except Exception as e:
+                        text = f"Error: {e}"
+                    return text
+
+                def on_chat(msg: str, b64=h_b64):
+                    try:
+                        text, in_tok, out_tok, ttft, total = get_response(b64, prompt=msg)
+                        log_llm_call("chat", ttft, total, in_tok, out_tok, response_text=text)
+                    except Exception as e:
+                        text = f"Error: {e}"
+                    return text
+
+                overlay_text = hint.hint
+                if hint.confidence == "medium":
+                    overlay_text = f"*({hint.category})* {hint.hint}"
+
+                reaction = show_overlay(overlay_text, on_more=on_more, on_chat=on_chat)
+                update_llm_reaction(log_key, reaction)
+                frame_monitor.reset()
+            state[0] = State.CAPTURING
+        except queue.Empty:
+            pass
 
         # Check for pending overlay (from activity tracking)
         if pending_overlay[0] is not None and state[0] == State.CAPTURING:
@@ -194,7 +225,7 @@ def main():
 
         # Capture
         try:
-            image_b64, image_bytes = capture_screen(monitor_index=MONITOR_INDEX)
+            image_b64, image_bytes, cx, cy, screen_w, screen_h = capture_screen(monitor_index=MONITOR_INDEX)
         except IndexError:
             print("Display slept — pausing capture.")
             state[0] = State.DISPLAY_SLEEP
@@ -259,43 +290,21 @@ def main():
             static_count = 0
             triggered_b64[0] = image_b64
             triggered_bytes = image_bytes
+            _cx, _cy, _sw, _sh = cx, cy, screen_w, screen_h
+            _idle = STATIC_THRESHOLD
 
-            print("Static screen detected — streaming to overlay...")
-            try:
-                stream = stream_response(image_b64, prompt=STUCK_PROMPT)
-            except Exception as e:
-                state[0] = State.CAPTURING
-                print(f"Stream error: {e}")
-                continue
+            print(f"Static screen detected — querying hint (cursor={_cx},{_cy})...")
 
-            log_key = [None]
-
-            def on_stream_done(stats, text):
-                in_tok, out_tok, ttft, total = stats
-                log_key[0] = log_llm_call("stuck", ttft, total, in_tok, out_tok,
-                                          response_text=text, image_bytes=triggered_bytes)
-
-            def on_more():
+            def _run_hint(b64=triggered_b64[0], raw=triggered_bytes):
                 try:
-                    text, in_tok, out_tok, ttft, total = get_response(triggered_b64[0], prompt=MORE_PROMPT)
-                    log_llm_call("more", ttft, total, in_tok, out_tok, response_text=text)
+                    hint = get_hint(b64, _cx, _cy, _sw, _sh, _idle)
+                    print(f"[hint] needs={hint.needs_hint} conf={hint.confidence} cat={hint.category}: {hint.reason}")
+                    pending_hint.put((hint, b64, raw, _cx, _cy))
                 except Exception as e:
-                    text = f"Error: {e}"
-                return text
+                    print(f"[hint] error: {e}")
+                    state[0] = State.CAPTURING
 
-            def on_chat(msg: str):
-                try:
-                    text, in_tok, out_tok, ttft, total = get_response(triggered_b64[0], prompt=msg)
-                    log_llm_call("chat", ttft, total, in_tok, out_tok, response_text=text)
-                except Exception as e:
-                    text = f"Error: {e}"
-                return text
-
-            reaction = show_overlay(stream, on_more=on_more, on_chat=on_chat, on_stream_done=on_stream_done)
-            if log_key[0]:
-                update_llm_reaction(log_key[0], reaction)
-            frame_monitor.reset()
-            state[0] = State.CAPTURING
+            threading.Thread(target=_run_hint, daemon=True).start()
 
         elapsed = time.monotonic() - loop_start
         sleep_time = 1.0 - elapsed

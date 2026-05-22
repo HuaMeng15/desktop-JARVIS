@@ -1,4 +1,4 @@
-"""Quick display test — runs show_overlay with fake streaming."""
+"""Quick display test — runs show_overlay with a static hint string."""
 import sys
 import os
 import time
@@ -6,30 +6,16 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from display import show_overlay
 
-SAMPLE = """## Summary
-You are reading a Python file in your editor.
-
-**Tips:**
-- Try running the tests with `pytest`
-- Check the **TODO** comments in the file
-- Consider refactoring the long function on line 42
-"""
-
-def fake_stream():
-    for word in SAMPLE.split(" "):
-        time.sleep(0.05)
-        yield word + " "
-    yield (100, 20, 800.0, 3200.0)  # fake stats tuple
+HINT = "*(coding)* That `TypeError` on line 42 means `data` is None — add a null check before the loop."
 
 def on_more():
     time.sleep(1)
-    return "Here is more detailed advice about what you should do next."
+    return "**More detail:**\n\nThe variable `data` comes from `fetch_records()` which returns `None` on an empty result set. Add `if data is None: return []` at the top of the function."
 
 def on_chat(msg):
     time.sleep(1)
-    return f"You asked: '{msg}'\n\nHere is my response to your question."
+    return f"You asked: '{msg}'\n\nHere is my response."
 
 if __name__ == "__main__":
-    result = show_overlay(fake_stream(), on_more=on_more, on_chat=on_chat,
-                          on_stream_done=lambda s: print(f"Stream done: {s}"))
+    result = show_overlay(HINT, on_more=on_more, on_chat=on_chat)
     print(f"Closed with: {result}")
