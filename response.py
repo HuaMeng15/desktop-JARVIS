@@ -37,7 +37,7 @@ The user has been idle. Your job is NOT to describe the screen — they can see 
 
 Return JSON only — no prose, no markdown fences. Fields:
 - needs_hint (boolean)
-- hint (string): one sentence ≤ 140 chars, specific to what is near the cursor
+- hint (string): ≤ 300 chars, specific to what is near the cursor
 - confidence ("low"|"medium"|"high")
 - reason (string): one short phrase explaining your reasoning
 - category (string): one of "coding", "reading", "writing", "browsing", "other"
@@ -54,6 +54,53 @@ class HintResult:
     input_tokens: int
     output_tokens: int
     total_ms: float
+
+
+_SELECTION_SYSTEM = """You are JARVIS, a sharp assistant. The user has selected some text and wants to understand it.
+
+Classify the selected text as one of:
+- "concept": a term, acronym, or noun phrase (e.g. "HPCC", "mutex", "gradient descent")
+- "sentence": a full sentence or clause expressing an idea
+- "code": source code, a command, or a code snippet
+
+Then respond based on the type:
+- concept → define it clearly and concisely; mention why it matters in context
+- sentence → explain the key insight or how to understand it; what does it really mean?
+- code → explain what the code does, step by step if needed
+
+Return JSON only — no prose, no markdown fences. Fields:
+- needs_hint (boolean): always true when text is selected
+- hint (string): your explanation, ≤ 400 chars
+- confidence ("low"|"medium"|"high"): always "high" for selections
+- reason (string): the detected type — "concept", "sentence", or "code"
+- category (string): one of "coding", "reading", "writing", "browsing", "other"
+"""
+
+
+def get_selection_hint(selected_text: str) -> HintResult:
+    """Explain selected text — concept, sentence, or code."""
+    user_text = f'Selected text:\n"""\n{selected_text}\n"""'
+    messages = [{"role": "user", "content": [{"type": "text", "text": user_text}]}]
+    start = time.monotonic()
+    msg = _client.messages.create(**_MESSAGES_KWARGS, system=_SELECTION_SYSTEM, messages=messages)
+    total_ms = (time.monotonic() - start) * 1000
+    text = msg.content[0].text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    try:
+        data = json.loads(text)
+    except Exception:
+        data = {}
+    return HintResult(
+        needs_hint=True,
+        hint=str(data.get("hint", "")).strip(),
+        confidence="high",
+        reason=str(data.get("reason", "selection")),
+        category=str(data.get("category", "other")),
+        input_tokens=msg.usage.input_tokens,
+        output_tokens=msg.usage.output_tokens,
+        total_ms=total_ms,
+    )
 
 
 def get_hint(image_b64: str, cx: int, cy: int, screen_w: int, screen_h: int, idle_s: int) -> HintResult:

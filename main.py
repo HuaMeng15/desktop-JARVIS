@@ -12,10 +12,11 @@ from enum import Enum, auto
 from PIL import Image
 
 from activity import ActivityTracker
-from capture import capture_screen
+from capture import capture_screen, get_clipboard_text, get_clipboard_change_count
 from display import show_overlay
 from monitor import FrameMonitor
-from response import get_hint, get_response
+from pet import run_pet_loop
+from response import get_hint, get_response, get_selection_hint
 from stats import log_activity_call, log_llm_call, update_llm_reaction
 
 MONITOR_INDEX = 1
@@ -105,13 +106,18 @@ def _format_recap(records) -> str:
     return "\n".join(lines)
 
 
-def main():
+def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list):
     state = [State.CAPTURING]
+    # paused is passed in (shared with pet)
     frame_monitor = FrameMonitor()
     activity_tracker = ActivityTracker()
     static_count = 0
     triggered_b64 = [None]
     pending_hint = queue.Queue()  # HintResult posted from background thread
+
+    # Clipboard tracking
+    last_clipboard_count = [get_clipboard_change_count()]
+    last_triggered_clipboard = [None]  # text of last clipboard that triggered a hint
 
     # Context-switch tracking
     prev_image_bytes = [None]
@@ -123,6 +129,38 @@ def main():
     lock_thread = threading.Thread(target=_start_lock_listener, args=(state,), daemon=True)
     lock_thread.start()
 
+    def _show_overlay_main(text, on_more, on_chat, on_stream_done=None):
+        """Post show_overlay to the main thread and block until it returns."""
+        result = queue.Queue()
+        ui_queue.put(lambda: result.put(
+            show_overlay(text, on_more=on_more, on_chat=on_chat,
+                         on_stream_done=on_stream_done)))
+        return result.get()
+
+    def _on_pet_capture():
+        """Left-click on pet: capture screen after 1s and trigger hint."""
+        if paused[0] or state[0] != State.CAPTURING:
+            return
+        try:
+            b64, raw, cx, cy, sw, sh = capture_screen(monitor_index=MONITOR_INDEX)
+        except Exception as e:
+            print(f"[pet] capture error: {e}")
+            return
+        state[0] = State.OVERLAY
+        triggered_b64[0] = b64
+
+        def _run():
+            try:
+                hint = get_hint(b64, cx, cy, sw, sh, 0)
+                pending_hint.put((hint, b64, raw, cx, cy, None))
+            except Exception as e:
+                print(f"[pet] hint error: {e}")
+                state[0] = State.CAPTURING
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    on_capture_ref[0] = _on_pet_capture
+
     print("JARVIS daemon started. Press Ctrl+C to stop.")
 
     while True:
@@ -130,12 +168,13 @@ def main():
 
         # Check for pending hint result (from background get_hint thread)
         try:
-            hint, h_b64, h_bytes, h_cx, h_cy = pending_hint.get_nowait()
+            hint, h_b64, h_bytes, h_cx, h_cy, h_selection = pending_hint.get_nowait()
             if hint.needs_hint and hint.confidence != "low":
                 log_key = log_llm_call("stuck", hint.total_ms, hint.total_ms,
                                        hint.input_tokens, hint.output_tokens,
                                        response_text=hint.hint, image_bytes=h_bytes,
-                                       cursor_x=h_cx, cursor_y=h_cy)
+                                       cursor_x=h_cx, cursor_y=h_cy,
+                                       selected_text=h_selection)
 
                 def on_more(b64=h_b64):
                     try:
@@ -157,7 +196,7 @@ def main():
                 if hint.confidence == "medium":
                     overlay_text = f"*({hint.category})* {hint.hint}"
 
-                reaction = show_overlay(overlay_text, on_more=on_more, on_chat=on_chat)
+                reaction = _show_overlay_main(overlay_text, on_more=on_more, on_chat=on_chat)
                 update_llm_reaction(log_key, reaction)
                 frame_monitor.reset()
             state[0] = State.CAPTURING
@@ -200,7 +239,7 @@ def main():
                     return text
                 return on_chat
 
-            show_overlay(overlay_text, on_more=_make_more(), on_chat=_make_chat())
+            _show_overlay_main(overlay_text, on_more=_make_more(), on_chat=_make_chat())
             frame_monitor.reset()
             state[0] = State.CAPTURING
 
@@ -284,8 +323,34 @@ def main():
 
         prev_image_bytes[0] = image_bytes
 
+        # --- Clipboard-based hint (new copy detected) ---
+        if state[0] == State.CAPTURING and not paused[0]:
+            current_count = get_clipboard_change_count()
+            if current_count != last_clipboard_count[0]:
+                last_clipboard_count[0] = current_count
+                clipboard_text = get_clipboard_text()
+                if clipboard_text and clipboard_text != last_triggered_clipboard[0]:
+                    last_triggered_clipboard[0] = clipboard_text
+                    state[0] = State.OVERLAY
+                    triggered_b64[0] = image_b64
+                    triggered_bytes = image_bytes
+                    _cx, _cy = cx, cy
+                    _sel = clipboard_text
+                    print(f"Clipboard copy detected — querying hint for {_sel[:60]!r}...")
+
+                    def _run_selection_hint(b64=triggered_b64[0], raw=triggered_bytes, sel=_sel):
+                        try:
+                            hint = get_selection_hint(sel)
+                            print(f"[hint] needs={hint.needs_hint} conf={hint.confidence} reason={hint.reason}")
+                            pending_hint.put((hint, b64, raw, _cx, _cy, sel))
+                        except Exception as e:
+                            print(f"[hint] error: {e}")
+                            state[0] = State.CAPTURING
+
+                    threading.Thread(target=_run_selection_hint, daemon=True).start()
+
         # --- Stuck-screen detection ---
-        if static_count >= STATIC_THRESHOLD and state[0] == State.CAPTURING:
+        if static_count >= STATIC_THRESHOLD and state[0] == State.CAPTURING and not paused[0]:
             state[0] = State.OVERLAY
             static_count = 0
             triggered_b64[0] = image_b64
@@ -299,7 +364,7 @@ def main():
                 try:
                     hint = get_hint(b64, _cx, _cy, _sw, _sh, _idle)
                     print(f"[hint] needs={hint.needs_hint} conf={hint.confidence} cat={hint.category}: {hint.reason}")
-                    pending_hint.put((hint, b64, raw, _cx, _cy))
+                    pending_hint.put((hint, b64, raw, _cx, _cy, None))
                 except Exception as e:
                     print(f"[hint] error: {e}")
                     state[0] = State.CAPTURING
@@ -313,4 +378,16 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    ui_queue: queue.Queue = queue.Queue()
+    paused_shared = [False]
+    on_capture_ref = [lambda: None]  # filled in by main() once ready
+
+    t = threading.Thread(
+        target=main, args=(ui_queue, paused_shared, on_capture_ref), daemon=True)
+    t.start()
+
+    run_pet_loop(
+        on_capture=lambda: on_capture_ref[0](),
+        paused_ref=paused_shared,
+        ui_queue=ui_queue,
+    )

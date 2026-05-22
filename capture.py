@@ -22,3 +22,44 @@ def capture_screen(monitor_index: int = 1) -> tuple[str, bytes, int, int, int, i
     cx = int(loc.x)
     cy = h - int(loc.y)
     return b64, raw, cx, cy, w, h
+
+
+def _ax_selected_text(pid: int) -> str | None:
+    from ApplicationServices import (
+        AXUIElementCreateApplication,
+        AXUIElementCopyAttributeValue,
+        kAXFocusedUIElementAttribute,
+        kAXSelectedTextAttribute,
+    )
+    app_elem = AXUIElementCreateApplication(pid)
+    err, focused = AXUIElementCopyAttributeValue(app_elem, kAXFocusedUIElementAttribute, None)
+    if err or focused is None:
+        return None
+    err, text = AXUIElementCopyAttributeValue(focused, kAXSelectedTextAttribute, None)
+    if err or not text:
+        return None
+    text = str(text).strip()
+    return text if text else None
+
+
+def get_clipboard_text() -> str | None:
+    """Return current clipboard text, or None if empty/non-text."""
+    try:
+        from AppKit import NSPasteboard, NSStringPboardType
+        pb = NSPasteboard.generalPasteboard()
+        text = pb.stringForType_(NSStringPboardType)
+        if text:
+            text = str(text).strip()
+            return text if text else None
+        return None
+    except Exception:
+        return None
+
+
+def get_clipboard_change_count() -> int:
+    """Return the clipboard change count (increments on each copy)."""
+    try:
+        from AppKit import NSPasteboard
+        return NSPasteboard.generalPasteboard().changeCount()
+    except Exception:
+        return 0

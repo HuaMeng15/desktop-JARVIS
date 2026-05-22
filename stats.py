@@ -25,6 +25,7 @@ _LLM_FIELDS = [
     "timestamp", "trigger", "ttft_ms", "total_ms",
     "input_tokens", "output_tokens", "cost_usd",
     "cursor_x", "cursor_y",
+    "selected_text",
     "screenshot_file", "response_file", "response_preview", "reaction",
 ]
 
@@ -85,6 +86,7 @@ def log_llm_call(
     image_bytes: bytes | None = None,
     cursor_x: int | None = None,
     cursor_y: int | None = None,
+    selected_text: str | None = None,
 ):
     """Save screenshot + response file, append row to stats/llm_calls.csv."""
     _ensure_dirs()
@@ -125,6 +127,7 @@ def log_llm_call(
         "cost_usd": f"{cost:.6f}",
         "cursor_x": cursor_x if cursor_x is not None else "",
         "cursor_y": cursor_y if cursor_y is not None else "",
+        "selected_text": (selected_text or "")[:200],
         "screenshot_file": screenshot_file,
         "response_file": response_file,
         "response_preview": response_text[:100].replace("\n", " "),

@@ -4,8 +4,8 @@ import tkinter as tk
 
 
 # ── Design tokens ────────────────────────────────────────────────────────────
-BG          = "#9e9a91"
-BG_CARD     = "#928d85"
+BG          = "#87837b"
+BG_CARD     = "#7e7a73"
 FG          = "#ffffff"
 FG_DIM      = "#e0ddd8"
 ACCENT      = "#ffffff"
@@ -14,7 +14,7 @@ BTN_FG      = "#ffffff"
 BTN_GOOD_BG = "#1f530e"
 BTN_GOOD_FG = "#ffffff"
 RADIUS      = 20
-ALPHA       = 0.82
+ALPHA       = 0.93
 
 
 def _rounded_rect(canvas, x1, y1, x2, y2, r, **kwargs):
