@@ -2,7 +2,7 @@
 
 > Stop copy-pasting into ChatGPT. JARVIS watches your screen and helps you *before* you have to ask.
 
-<video src="https://github.com/HuaMeng15/desktop-JARVIS/releases/download/v1.0.0/demo.mp4" controls width="100%"></video>
+[![JARVIS Demo](https://img.youtube.com/vi/cguMHtoSZsE/maxresdefault.jpg)](https://youtu.be/cguMHtoSZsE)
 
 ---
 
