@@ -9,87 +9,117 @@ _ICON_DIR = Path(__file__).parent / "src" / "icons"
 
 
 def run_pet_loop(on_capture, paused_ref: list, ui_queue: queue.Queue,
-                 root_ref: list | None = None, on_pause=None) -> None:
+                root_ref: list | None = None, on_pause=None,
+                pet_pos_ref: list | None = None) -> None:
     from AppKit import (NSApplication, NSApplicationActivationPolicyAccessory,
-                        NSBorderlessWindowMask, NSColor, NSImage, NSImageView,
+                        NSBorderlessWindowMask, NSColor, NSImage,
                         NSMakeRect, NSWindow, NSBackingStoreBuffered, NSScreen,
-                        NSView, NSMenu, NSMenuItem)
+                        NSView, NSMenu, NSMenuItem,
+                        NSEventTypeLeftMouseDown, NSEventTypeLeftMouseUp,
+                        NSEventTypeLeftMouseDragged, NSEventTypeRightMouseDown)
     from Foundation import NSTimer, NSObject
-    import objc
 
     NSApplication.sharedApplication()
     NSApplication.sharedApplication().setActivationPolicy_(
         NSApplicationActivationPolicyAccessory)
 
     sw = int(NSScreen.mainScreen().frame().size.width)
+    sh = int(NSScreen.mainScreen().frame().size.height)
     dock_h = int(NSScreen.mainScreen().visibleFrame().origin.y)
     ax = sw - PET_SIZE - 30
     ay = dock_h + 30
 
-    win = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-        NSMakeRect(ax, ay, PET_SIZE, PET_SIZE),
-        NSBorderlessWindowMask, NSBackingStoreBuffered, False)
-    win.setBackgroundColor_(NSColor.clearColor())
-    win.setOpaque_(False)
-    win.setLevel_(3)  # NSFloatingWindowLevel
-
-    if root_ref is not None:
-        root_ref[0] = win
-
     _drag = {}
-    _delegate_ref = []
+    _refs = []  # keep objects alive
 
     class _MenuDelegate(NSObject):
         def togglePause_(self, s):
             paused_ref[0] = not paused_ref[0]
+            win.contentView().setNeedsDisplay_(True)
             if on_pause:
                 on_pause(paused_ref[0])
         def quit_(self, s):
             import os; os._exit(0)
 
     _menu_delegate = _MenuDelegate.alloc().init()
-    _delegate_ref.append(_menu_delegate)
+    _refs.append(_menu_delegate)
 
-    class _PetView(NSView):
-        def acceptsFirstMouse_(self, event): return True
-        def mouseDownCanMoveWindow(self): return True
+    import objc as _objc
 
-        def mouseDown_(self, event):
-            _drag['wx'] = win.frame().origin.x
-            _drag['wy'] = win.frame().origin.y
+    class _PetWindow(NSWindow):
+        def canBecomeKeyWindow(self): return True
 
-        def mouseUp_(self, event):
-            dwx = win.frame().origin.x - _drag.get('wx', win.frame().origin.x)
-            dwy = win.frame().origin.y - _drag.get('wy', win.frame().origin.y)
-            if abs(dwx) < 5 and abs(dwy) < 5:
-                threading.Timer(1.0, on_capture).start()
-
-        def rightMouseDown_(self, event):
-            menu = NSMenu.alloc().init()
-            lbl = "Resume" if paused_ref[0] else "Pause"
-            i1 = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(lbl, "togglePause:", "")
-            i1.setTarget_(_menu_delegate)
-            i2 = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Quit", "quit:", "")
-            i2.setTarget_(_menu_delegate)
-            menu.addItem_(i1)
-            menu.addItem_(NSMenuItem.separatorItem())
-            menu.addItem_(i2)
-            NSMenu.popUpContextMenu_withEvent_forView_(menu, event, self)
-
-    view = _PetView.alloc().initWithFrame_(NSMakeRect(0, 0, PET_SIZE, PET_SIZE))
-    view.setWantsLayer_(True)
-    view.layer().setBackgroundColor_(None)
+        def sendEvent_(self, event):
+            try:
+                t = event.type()
+                if t == NSEventTypeLeftMouseDown:
+                    loc = self.convertPointToScreen_(event.locationInWindow())
+                    _drag['sx'] = loc.x
+                    _drag['sy'] = loc.y
+                    _drag['ox'] = self.frame().origin.x
+                    _drag['oy'] = self.frame().origin.y
+                    _drag['moved'] = False
+                elif t == NSEventTypeLeftMouseDragged:
+                    loc = self.convertPointToScreen_(event.locationInWindow())
+                    dx = loc.x - _drag.get('sx', loc.x)
+                    dy = loc.y - _drag.get('sy', loc.y)
+                    nx, ny = _drag['ox'] + dx, _drag['oy'] + dy
+                    self.setFrameOrigin_((nx, ny))
+                    _update_pos_ref(nx, ny)
+                    _drag['moved'] = True
+                elif t == NSEventTypeLeftMouseUp:
+                    if not _drag.get('moved') and not paused_ref[0]:
+                        threading.Timer(1.0, on_capture).start()
+                elif t == NSEventTypeRightMouseDown:
+                    menu = NSMenu.alloc().init()
+                    lbl = "Resume" if paused_ref[0] else "Pause"
+                    i1 = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(lbl, "togglePause:", "")
+                    i1.setTarget_(_menu_delegate)
+                    i2 = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Quit", "quit:", "")
+                    i2.setTarget_(_menu_delegate)
+                    menu.addItem_(i1)
+                    menu.addItem_(NSMenuItem.separatorItem())
+                    menu.addItem_(i2)
+                    NSMenu.popUpContextMenu_withEvent_forView_(menu, event, self.contentView())
+                    return
+            except Exception as e:
+                print(f'sendEvent_ error: {e}', flush=True)
+            _objc.super(_PetWindow, self).sendEvent_(event)
 
     ns_img = NSImage.alloc().initWithContentsOfFile_(str(_ICON_DIR / "jarvis.heic"))
-    img_view = NSImageView.alloc().initWithFrame_(NSMakeRect(0, 0, PET_SIZE, PET_SIZE))
-    img_view.setImage_(ns_img)
-    img_view.setImageScaling_(3)
-    img_view.setIgnoreHitTest_(True)  # pass mouse events through to _PetView
-    view.addSubview_(img_view)
+    ns_img_pause = NSImage.alloc().initWithContentsOfFile_(str(_ICON_DIR / "pause.heic"))
+    _iw = ns_img.size().width
+    _ih = ns_img.size().height
+    PET_W = PET_SIZE
+    PET_H = int(PET_SIZE * _ih / _iw) if _iw else PET_SIZE
 
+    def _update_pos_ref(appkit_x, appkit_y):
+        if pet_pos_ref is not None:
+            pet_pos_ref[:] = [int(appkit_x), int(sh - appkit_y - PET_H), PET_W, PET_H]
+
+    _update_pos_ref(ax, ay)  # set initial position
+
+    win = _PetWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+        NSMakeRect(ax, ay, PET_W, PET_H),
+        NSBorderlessWindowMask, NSBackingStoreBuffered, False)
+    win.setBackgroundColor_(NSColor.clearColor())
+    win.setOpaque_(False)
+    win.setLevel_(3)
+
+    if root_ref is not None:
+        root_ref[0] = win
+
+    class _PetView(NSView):
+        def isOpaque(self): return False
+        def drawRect_(self, rect):
+            img = ns_img_pause if paused_ref[0] else ns_img
+            img.drawInRect_fromRect_operation_fraction_(
+                NSMakeRect(0, 0, PET_W, PET_H),
+                NSMakeRect(0, 0, 0, 0), 18, 1.0)
+
+    view = _PetView.alloc().initWithFrame_(NSMakeRect(0, 0, PET_W, PET_H))
     win.setContentView_(view)
 
-    # --- UI queue drain via NSTimer ---
     class _DrainTarget(NSObject):
         def drain_(self, _timer):
             try:
@@ -99,6 +129,7 @@ def run_pet_loop(on_capture, paused_ref: list, ui_queue: queue.Queue,
                 pass
 
     drain_target = _DrainTarget.alloc().init()
+    _refs.append(drain_target)
     NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
         0.2, drain_target, "drain:", None, True)
 

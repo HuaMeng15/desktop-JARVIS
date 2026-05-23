@@ -113,7 +113,7 @@ def _darken(hex_color):
 
 
 def show_overlay(text_or_stream, on_more, on_chat, on_stream_done=None,
-                 parent=None, pet_size: int = 0) -> str:
+                 parent=None, pet_size: int = 0, pet_pos_ref: list | None = None) -> str:
     """Display overlay. Returns reaction string ('good'/'dismiss'/etc).
 
     If parent is given (a tk.Tk root), uses Toplevel + wait_window instead of
@@ -187,9 +187,15 @@ def show_overlay(text_or_stream, on_more, on_chat, on_stream_done=None,
 
         new_h = max(MIN_H, min(MAX_H, HEADER_H + content_h + BOTTOM_H))
         WIN_H[0] = new_h
-        margin = pet_size + 16 if pet_size else 24
-        x = screen_w - WIN_W - 24
-        y = screen_h - new_h - margin
+        if pet_pos_ref and len(pet_pos_ref) == 4:
+            px, py, pw, ph = pet_pos_ref
+            x = px + pw // 2 - WIN_W // 2  # center over pet horizontally
+            x = max(0, min(screen_w - WIN_W, x))
+            y = py - new_h - 8  # 8px gap above pet
+        else:
+            margin = pet_size + 16 if pet_size else 24
+            x = screen_w - WIN_W - 24
+            y = screen_h - new_h - margin
         root.geometry(f"{WIN_W}x{new_h}+{x}+{y}")
         text_frame.place(x=0, y=HEADER_H, width=WIN_W, height=new_h - HEADER_H - BOTTOM_H)
         bottom.place(x=RADIUS, y=new_h - BOTTOM_H + 2, width=WIN_W - RADIUS*2)
@@ -301,11 +307,19 @@ def show_overlay(text_or_stream, on_more, on_chat, on_stream_done=None,
         _resize_to_text()
         root.update_idletasks()
         _apply_rounded_corners()
-        root.attributes("-alpha", 0)       # invisible before deiconify
+        root.attributes("-alpha", 0)
         root.attributes("-topmost", True)
         root.deiconify()
-        root.update_idletasks()            # flush so window is drawn at alpha=0
+        root.update_idletasks()
         _fade_in()
+        if pet_pos_ref is not None:
+            _poll_pet_pos()
+
+    def _poll_pet_pos():
+        if closed[0]:
+            return
+        _resize_to_text()
+        root.after(50, _poll_pet_pos)
 
     closed = [False]
 

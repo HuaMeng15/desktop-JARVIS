@@ -107,7 +107,8 @@ def _format_recap(records) -> str:
 
 
 def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
-         tk_root_ref: list | None = None, static_count: list | None = None):
+         tk_root_ref: list | None = None, static_count: list | None = None,
+         pet_pos_ref: list | None = None):
     state = [State.CAPTURING]
     # paused is passed in (shared with pet)
     frame_monitor = FrameMonitor()
@@ -133,13 +134,11 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
 
     def _show_overlay_main(text, on_more, on_chat, on_stream_done=None):
         """Post show_overlay to the main thread and block until it returns."""
-        from pet import PET_SIZE
         result = queue.Queue()
-        parent = tk_root_ref[0] if tk_root_ref else None
         ui_queue.put(lambda: result.put(
             show_overlay(text, on_more=on_more, on_chat=on_chat,
-                         on_stream_done=on_stream_done, parent=parent,
-                         pet_size=PET_SIZE)))
+                         on_stream_done=on_stream_done,
+                         pet_pos_ref=pet_pos_ref)))
         return result.get()
 
     def _on_pet_capture():
@@ -393,10 +392,11 @@ if __name__ == "__main__":
     paused_shared = [False]
     on_capture_ref = [lambda: None]
     tk_root_ref = [None]
-    static_count_shared = [0]  # shared so on_pause can reset it
+    static_count_shared = [0]
+    pet_pos_ref = [0, 0, 0, 0]
 
     t = threading.Thread(
-        target=main, args=(ui_queue, paused_shared, on_capture_ref, tk_root_ref, static_count_shared), daemon=True)
+        target=main, args=(ui_queue, paused_shared, on_capture_ref, tk_root_ref, static_count_shared, pet_pos_ref), daemon=True)
     t.start()
 
     run_pet_loop(
@@ -405,4 +405,5 @@ if __name__ == "__main__":
         ui_queue=ui_queue,
         root_ref=tk_root_ref,
         on_pause=lambda is_paused: static_count_shared.__setitem__(0, 0),
+        pet_pos_ref=pet_pos_ref,
     )

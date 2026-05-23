@@ -27,7 +27,10 @@ if sys.executable != _PYTHON_APP and os.path.exists(_PYTHON_APP):
     env = os.environ.copy()
     env["PYTHONPATH"] = site_pkgs
     env["PYTHONNOUSERSITE"] = "1"
-    sys.exit(subprocess.run([_PYTHON_APP, "-S"] + sys.argv, env=env).returncode)
+    try:
+        sys.exit(subprocess.run([_PYTHON_APP, "-S"] + sys.argv, env=env).returncode)
+    except KeyboardInterrupt:
+        sys.exit(0)
 
 # When re-exec'd with -S, manually add venv site-packages
 if not any("site-packages" in p for p in sys.path):
@@ -78,16 +81,14 @@ def test_both():
 
     ui_q = queue.Queue()
     paused = [False]
-    root_ref = [None]
+    pet_pos_ref = [0, 0, 0, 0]
 
-    # After 2s, trigger an overlay via ui_queue
     def _trigger_overlay():
         time.sleep(2)
         result_q = queue.Queue()
-        parent = root_ref[0]
         ui_q.put(lambda: result_q.put(
             show_overlay(HINT, on_more=on_more, on_chat=on_chat,
-                         parent=parent, pet_size=80)))
+                         pet_pos_ref=pet_pos_ref)))
         reaction = result_q.get()
         print(f"[both] overlay closed with: {reaction}")
 
@@ -97,7 +98,7 @@ def test_both():
         on_capture=lambda: print("[pet] capture triggered"),
         paused_ref=paused,
         ui_queue=ui_q,
-        root_ref=root_ref,
+        pet_pos_ref=pet_pos_ref,
     )
 
 
