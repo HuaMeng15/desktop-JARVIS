@@ -142,6 +142,22 @@ def run_pet_loop(on_capture, paused_ref: list, ui_queue: queue.Queue,
 
     win.orderFrontRegardless()
 
+    from AppKit import NSEvent, NSEventMaskKeyDown, NSEventModifierFlagControl
+    def _on_global_key(event):
+        try:
+            if not (event.modifierFlags() & NSEventModifierFlagControl):
+                return
+            kc = event.keyCode()
+            ctrl = bool(event.modifierFlags() & NSEventModifierFlagControl)
+            if kc == 111 and ctrl:  # Ctrl+F12 — toggle pause
+                _menu_delegate.togglePause_(None)
+            elif kc == 103 and ctrl and not paused_ref[0]:  # Ctrl+F11 — capture
+                threading.Timer(1.0, on_capture).start()
+        except Exception as e:
+            print(f'hotkey error: {e}', flush=True)
+    _monitor = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(NSEventMaskKeyDown, _on_global_key)
+    _refs.append(_monitor)
+
     import signal
     signal.signal(signal.SIGINT, lambda *_: NSApplication.sharedApplication().terminate_(None))
 
