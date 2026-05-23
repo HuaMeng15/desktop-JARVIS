@@ -7,8 +7,8 @@ from pathlib import Path
 import imagehash
 from PIL import Image
 
-SCREENSHOTS_DIR = Path("/Users/menghua/Research/desktop-JARVIS/stats/screenshots")
-OUTPUT_CSV = Path("/Users/menghua/Research/desktop-JARVIS/stats/compare.csv")
+SCREENSHOTS_DIR = Path(__file__).parent.parent / "stats" / "screenshots"
+OUTPUT_CSV = Path(__file__).parent.parent / "stats" / "compare.csv"
 
 
 def dhash(img: Image.Image) -> imagehash.ImageHash:

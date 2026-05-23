@@ -93,7 +93,7 @@ def get_selection_hint(selected_text: str) -> HintResult:
         data = {}
     return HintResult(
         needs_hint=True,
-        hint=str(data.get("hint", "")).strip(),
+        hint=str(data.get("hint", text)).strip(),
         confidence="high",
         reason=str(data.get("reason", "selection")),
         category=str(data.get("category", "other")),

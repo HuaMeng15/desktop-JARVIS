@@ -18,7 +18,7 @@ def main():
         start = time.monotonic()
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        _, raw = capture_screen()
+        _, raw, *_ = capture_screen()
         path = os.path.join(STATS_DIR, f"screen_{timestamp}.png")
         with open(path, "wb") as f:
             f.write(raw)

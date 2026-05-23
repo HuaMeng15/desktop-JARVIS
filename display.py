@@ -467,8 +467,6 @@ def _show_overlay_impl(text_or_stream, on_more, on_chat, on_stream_done,
     _btns['send'].setHidden_(True)
     _layout_buttons(WIN_H[0])
 
-    # ── Drag (unused but kept for future) ─────────────────────────────────────
-
     ov_delegate = _OvDelegateCls.alloc().init()
     ov_delegate._closed = closed
     _refs.append(ov_delegate)

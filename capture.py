@@ -18,28 +18,10 @@ def capture_screen(monitor_index: int = 1) -> tuple[str, bytes, int, int, int, i
     raw = buffer.getvalue()
     b64 = base64.standard_b64encode(raw).decode("utf-8")
     w, h = img.size
-    # Quartz y is bottom-up; convert to top-down
-    cx = int(loc.x)
-    cy = h - int(loc.y)
+    # Quartz y is bottom-up; convert to top-down. Subtract monitor origin for multi-monitor.
+    cx = int(loc.x) - monitor["left"]
+    cy = h - (int(loc.y) - monitor["top"])
     return b64, raw, cx, cy, w, h
-
-
-def _ax_selected_text(pid: int) -> str | None:
-    from ApplicationServices import (
-        AXUIElementCreateApplication,
-        AXUIElementCopyAttributeValue,
-        kAXFocusedUIElementAttribute,
-        kAXSelectedTextAttribute,
-    )
-    app_elem = AXUIElementCreateApplication(pid)
-    err, focused = AXUIElementCopyAttributeValue(app_elem, kAXFocusedUIElementAttribute, None)
-    if err or focused is None:
-        return None
-    err, text = AXUIElementCopyAttributeValue(focused, kAXSelectedTextAttribute, None)
-    if err or not text:
-        return None
-    text = str(text).strip()
-    return text if text else None
 
 
 def get_clipboard_text() -> str | None:

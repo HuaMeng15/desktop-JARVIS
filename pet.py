@@ -40,7 +40,7 @@ def run_pet_loop(on_capture, paused_ref: list, ui_queue: queue.Queue,
             if on_pause:
                 on_pause(paused_ref[0])
         def quit_(self, s):
-            import os; os._exit(0)
+            NSApplication.sharedApplication().terminate_(None)
 
     _menu_delegate = _MenuDelegate.alloc().init()
     _refs.append(_menu_delegate)

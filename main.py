@@ -235,7 +235,7 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
             state[0] = State.OVERLAY
             if kind == "previous_work":
                 overlay_text = _format_previous_work(data)
-                snap_b64 = base64.standard_b64encode(data.screenshot_file.encode()).decode() if False else triggered_b64[0]
+                snap_b64 = triggered_b64[0]
             else:
                 overlay_text = _format_recap(data)
                 snap_b64 = None
