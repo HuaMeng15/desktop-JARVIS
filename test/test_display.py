@@ -34,7 +34,6 @@ if sys.executable != _PYTHON_APP and os.path.exists(_PYTHON_APP):
 
 # When re-exec'd with -S, manually add venv site-packages
 if not any("site-packages" in p for p in sys.path):
-    import site
     _venv = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "venv")
     sys.path.insert(0, os.environ.get("PYTHONPATH", ""))
 
@@ -57,14 +56,19 @@ def test_overlay():
 
 
 def test_pet():
-    """Show the desktop pet. Left-click prints 'capture triggered', right-click to pause/quit."""
+    """Show the desktop pet. Left-click shows hint overlay, right-click to pause/quit."""
     from pet import run_pet_loop
+    from display import show_overlay
 
     ui_q = queue.Queue()
     paused = [False]
 
     def fake_capture():
-        print("[pet] capture triggered (no LLM call)")
+        print("[pet] capture triggered — showing hint window")
+        threading.Thread(
+            target=lambda: show_overlay(HINT, on_more=on_more, on_chat=on_chat, _ui_queue=ui_q),
+            daemon=True,
+        ).start()
 
     run_pet_loop(
         on_capture=fake_capture,
@@ -82,23 +86,36 @@ def test_both():
     ui_q = queue.Queue()
     paused = [False]
     pet_pos_ref = [0, 0, 0, 0]
+    active_close = [None]  # close fn for current overlay
 
-    def _trigger_overlay():
-        time.sleep(2)
-        result_q = queue.Queue()
-        ui_q.put(lambda: result_q.put(
-            show_overlay(HINT, on_more=on_more, on_chat=on_chat,
-                         pet_pos_ref=pet_pos_ref)))
-        reaction = result_q.get()
-        print(f"[both] overlay closed with: {reaction}")
+    def fake_capture():
+        print("[pet] capture triggered — showing hint window")
+        close_ref = []
+        active_close[0] = None
+        threading.Thread(
+            target=lambda: show_overlay(HINT, on_more=on_more, on_chat=on_chat,
+                                        pet_pos_ref=pet_pos_ref, _ui_queue=ui_q,
+                                        close_ref=close_ref),
+            daemon=True,
+        ).start()
+        # show_overlay populates close_ref synchronously before blocking
+        import time; time.sleep(0.05)
+        if close_ref:
+            active_close[0] = close_ref[0]
 
-    threading.Thread(target=_trigger_overlay, daemon=True).start()
+    def on_pause(is_paused):
+        print(f"[pet] {'paused' if is_paused else 'resumed'}")
+        if is_paused and active_close[0]:
+            print(f"[pet] closing hint window, close_fn={active_close[0]}")
+            active_close[0]()
+            print("[pet] close called")
 
     run_pet_loop(
-        on_capture=lambda: print("[pet] capture triggered"),
+        on_capture=fake_capture,
         paused_ref=paused,
         ui_queue=ui_q,
         pet_pos_ref=pet_pos_ref,
+        on_pause=on_pause,
     )
 
 

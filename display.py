@@ -1,331 +1,495 @@
+"""Overlay window: pure AppKit, runs on the AppKit main thread."""
+
 import re
 import threading
-import tkinter as tk
+
+# Design tokens
+BG_R, BG_G, BG_B       = 0x87/255, 0x83/255, 0x7b/255
+CARD_R, CARD_G, CARD_B  = 0x7e/255, 0x7a/255, 0x73/255
+BTN_R, BTN_G, BTN_B     = 0x7a/255, 0x76/255, 0x70/255
+GOOD_R, GOOD_G, GOOD_B  = 0x1f/255, 0x53/255, 0x0e/255
+WIN_W    = 460
+MIN_H    = 140
+MAX_H    = 480
+HEADER_H = 32
+BOTTOM_H = 56
+CHAT_ROW_H = 54   # extra height added when chat input is visible
+CHAT_H   = 44
+RADIUS   = 12.0
+ALPHA    = 0.93
+GAP      = 8    # gap above pet
+MARGIN_R = 32   # margin from right screen edge
 
 
-# ── Design tokens ────────────────────────────────────────────────────────────
-BG          = "#87837b"
-BG_CARD     = "#7e7a73"
-FG          = "#ffffff"
-FG_DIM      = "#e0ddd8"
-ACCENT      = "#ffffff"
-BTN_BG      = "#7a7670"
-BTN_FG      = "#ffffff"
-BTN_GOOD_BG = "#1f530e"
-BTN_GOOD_FG = "#ffffff"
-RADIUS      = 20
-ALPHA       = 0.93
+def _ns_color(r, g, b, a=1.0):
+    from AppKit import NSColor
+    return NSColor.colorWithSRGBRed_green_blue_alpha_(r, g, b, a)
 
 
-def _rounded_rect(canvas, x1, y1, x2, y2, r, **kwargs):
-    """Draw a rounded rectangle on a canvas."""
-    canvas.create_arc(x1, y1, x1+2*r, y1+2*r, start=90,  extent=90,  style="pieslice", **kwargs)
-    canvas.create_arc(x2-2*r, y1, x2, y1+2*r, start=0,   extent=90,  style="pieslice", **kwargs)
-    canvas.create_arc(x1, y2-2*r, x1+2*r, y2, start=180, extent=90,  style="pieslice", **kwargs)
-    canvas.create_arc(x2-2*r, y2-2*r, x2, y2, start=270, extent=90,  style="pieslice", **kwargs)
-    canvas.create_rectangle(x1+r, y1, x2-r, y2, **kwargs)
-    canvas.create_rectangle(x1, y1+r, x2, y2-r, **kwargs)
+_MainCallerCls = None
+
+def _on_main(fn):
+    from Foundation import NSThread
+    if NSThread.isMainThread():
+        fn()
+    else:
+        import objc as _objc
+        global _MainCallerCls
+        if _MainCallerCls is None:
+            from Foundation import NSObject
+            class _MainCallerCls(NSObject):
+                @_objc.python_method
+                def schedule(self, fn):
+                    self._fn = fn
+                    self.performSelectorOnMainThread_withObject_waitUntilDone_(
+                        "run:", None, False)
+                def run_(self, _):
+                    self._fn()
+        caller = _MainCallerCls.alloc().init()
+        caller.schedule(fn)
 
 
-def _render_markdown(text_box: tk.Text, text: str):
-    text_box.configure(state="normal")
-    text_box.delete("1.0", tk.END)
-    text_box.tag_configure("h1", font=("SF Pro Display", 14, "bold"), spacing3=4, foreground=FG)
-    text_box.tag_configure("h2", font=("SF Pro Display", 12, "bold"), spacing3=2, foreground=FG)
-    text_box.tag_configure("h3", font=("SF Pro Display", 11, "bold"), foreground=FG)
-    text_box.tag_configure("bold", font=("SF Pro Display", 11, "bold"), foreground=FG)
-    text_box.tag_configure("bullet", lmargin1=16, lmargin2=24, foreground=FG)
-    text_box.tag_configure("italic", font=("SF Pro Display", 10, "italic"), foreground=FG_DIM)
+def _cg_color(r, g, b, a=1.0):
+    import objc
+    from Quartz import CGColorCreateGenericRGB
+    return CGColorCreateGenericRGB(r, g, b, a)
+
+
+def _parse_markdown(text: str):
+    """Return list of (string, attrs_dict) for NSAttributedString."""
+    from AppKit import NSFont, NSForegroundColorAttributeName, NSFontAttributeName
+    white = _ns_color(1, 1, 1)
+    dim   = _ns_color(0.88, 0.87, 0.85)
+    body_font  = NSFont.fontWithName_size_("SF Pro Display", 16) or NSFont.systemFontOfSize_(16)
+    bold_font  = NSFont.fontWithName_size_("SF Pro Display Bold", 16) or NSFont.boldSystemFontOfSize_(16)
+    h1_font    = NSFont.fontWithName_size_("SF Pro Display Bold", 20) or NSFont.boldSystemFontOfSize_(20)
+    italic_font= NSFont.fontWithName_size_("SF Pro Display Italic", 15) or NSFont.systemFontOfSize_(15)
+
+    runs = []
     for line in text.splitlines():
-        if line.startswith("### "):
-            _insert_inline(text_box, line[4:], "h3")
+        if line.startswith("# "):
+            runs += _inline(line[2:], h1_font, white)
         elif line.startswith("## "):
-            _insert_inline(text_box, line[3:], "h2")
-        elif line.startswith("# "):
-            _insert_inline(text_box, line[2:], "h1")
+            runs += _inline(line[3:], bold_font, white)
+        elif line.startswith("### "):
+            runs += _inline(line[4:], bold_font, white)
         elif re.match(r"^[-*]\s", line):
-            _insert_inline(text_box, "• " + line[2:], "bullet")
+            runs += _inline("• " + line[2:], body_font, white)
         elif re.match(r"^\d+\.\s", line):
-            _insert_inline(text_box, line, "bullet")
+            runs += _inline(line, body_font, white)
         else:
-            _insert_inline(text_box, line, None)
-        text_box.insert(tk.END, "\n")
-    text_box.configure(state="disabled")
+            runs += _inline(line, body_font, white)
+        runs.append(("\n", {NSFontAttributeName: body_font, NSForegroundColorAttributeName: white}))
+    return runs
 
 
-def _insert_inline(text_box, line: str, base_tag):
-    # Handle *italic* (single asterisk)
+def _inline(line, base_font, base_color):
+    from AppKit import NSFont, NSForegroundColorAttributeName, NSFontAttributeName
+    white = base_color
+    dim   = _ns_color(0.88, 0.87, 0.85)
+    bold_font   = NSFont.fontWithName_size_("SF Pro Display Bold", base_font.pointSize()) or NSFont.boldSystemFontOfSize_(base_font.pointSize())
+    italic_font = NSFont.fontWithName_size_("SF Pro Display Italic", 14) or NSFont.systemFontOfSize_(14)
+
     parts = re.split(r"(\*\*[^*]+\*\*|\*[^*]+\*)", line)
-    for part in parts:
-        if part.startswith("**") and part.endswith("**"):
-            tags = ("bold",) if not base_tag else (base_tag, "bold")
-            text_box.insert(tk.END, part[2:-2], tags)
-        elif part.startswith("*") and part.endswith("*"):
-            tags = ("italic",) if not base_tag else (base_tag, "italic")
-            text_box.insert(tk.END, part[1:-1], tags)
+    runs = []
+    for p in parts:
+        if p.startswith("**") and p.endswith("**"):
+            runs.append((p[2:-2], {NSFontAttributeName: bold_font, NSForegroundColorAttributeName: white}))
+        elif p.startswith("*") and p.endswith("*"):
+            runs.append((p[1:-1], {NSFontAttributeName: italic_font, NSForegroundColorAttributeName: dim}))
         else:
-            text_box.insert(tk.END, part, (base_tag,) if base_tag else ())
+            runs.append((p, {NSFontAttributeName: base_font, NSForegroundColorAttributeName: white}))
+    return runs
 
 
-def _pill_button(parent, text, command, bg, fg, bold=False):
-    """Canvas-based pill button with true rounded corners."""
-    font_spec = ("SF Pro Display", 10, "bold") if bold else ("SF Pro Display", 10)
-    # measure text size
-    tmp = tk.Label(parent, text=text, font=font_spec)
-    tmp.update_idletasks()
-    tw = tmp.winfo_reqwidth()
-    th = tmp.winfo_reqheight()
-    tmp.destroy()
-    pw, ph = tw + 24, th + 8
-    r = ph // 2  # fully pill-shaped
-
-    c = tk.Canvas(parent, width=pw, height=ph, bg=parent["bg"],
-                  highlightthickness=0, cursor="hand2")
-
-    def _draw(color):
-        c.delete("all")
-        # pill shape via two arcs + rectangle
-        c.create_arc(0, 0, 2*r, ph, start=90, extent=180, fill=color, outline=color)
-        c.create_arc(pw-2*r, 0, pw, ph, start=270, extent=180, fill=color, outline=color)
-        c.create_rectangle(r, 0, pw-r, ph, fill=color, outline=color)
-        c.create_text(pw//2, ph//2, text=text, fill=fg, font=font_spec)
-
-    _draw(bg)
-    c.bind("<Enter>",           lambda e: _draw(_lighten(bg)))
-    c.bind("<Leave>",           lambda e: _draw(bg))
-    c.bind("<Button-1>",        lambda e: (_draw(_darken(bg)), command()))
-    c.bind("<ButtonRelease-1>", lambda e: _draw(bg))
-    return c
+def _make_attr_string(text: str):
+    from Foundation import NSMutableAttributedString, NSAttributedString
+    result = NSMutableAttributedString.alloc().init()
+    for s, attrs in _parse_markdown(text):
+        chunk = NSAttributedString.alloc().initWithString_attributes_(s, attrs)
+        result.appendAttributedString_(chunk)
+    return result
 
 
-def _lighten(hex_color):
-    r = min(255, int(hex_color[1:3], 16) + 20)
-    g = min(255, int(hex_color[3:5], 16) + 20)
-    b = min(255, int(hex_color[5:7], 16) + 20)
-    return f"#{r:02x}{g:02x}{b:02x}"
+_BtnDelegate = None
+_BtnViewCls  = None
+_OvWindowCls = None
+_OvDelegateCls = None
+_FadeTargetCls = None
+_FollowTargetCls = None
+_ChatFieldDelegateCls = None
 
+def _button(parent_view, title, rect, bg_r, bg_g, bg_b, action_fn, refs):
+    global _BtnViewCls
+    from AppKit import NSView, NSFont, NSColor, NSBezierPath, NSString
+    from AppKit import NSForegroundColorAttributeName, NSFontAttributeName
 
-def _darken(hex_color):
-    r = max(0, int(hex_color[1:3], 16) - 20)
-    g = max(0, int(hex_color[3:5], 16) - 20)
-    b = max(0, int(hex_color[5:7], 16) - 20)
-    return f"#{r:02x}{g:02x}{b:02x}"
+    if _BtnViewCls is None:
+        class _BtnView(NSView):
+            def isOpaque(self): return False
+            def acceptsFirstMouse_(self, event): return True
+            def mouseDown_(self, event):
+                self._down = True
+                self.setNeedsDisplay_(True)
+            def mouseUp_(self, event):
+                was_down = getattr(self, '_down', False)
+                self._down = False
+                self.setNeedsDisplay_(True)
+                if was_down:
+                    print(f"[btn] clicked: {self._title}", flush=True)
+                    self._fn()
+            def drawRect_(self, rect):
+                from AppKit import NSBezierPath, NSFont, NSColor, NSString
+                from AppKit import NSForegroundColorAttributeName, NSFontAttributeName
+                alpha = 0.7 if getattr(self, '_down', False) else 1.0
+                _ns_color(self._r, self._g, self._b, alpha).set()
+                NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                    self.bounds(), 10, 10).fill()
+                font = NSFont.fontWithName_size_("SF Pro Display", 12) or NSFont.systemFontOfSize_(12)
+                attrs = {NSFontAttributeName: font,
+                         NSForegroundColorAttributeName: NSColor.whiteColor()}
+                s = NSString.stringWithString_(self._title)
+                sz = s.sizeWithAttributes_(attrs)
+                b = self.bounds()
+                s.drawAtPoint_withAttributes_(
+                    ((b.size.width - sz.width) / 2, (b.size.height - sz.height) / 2), attrs)
+        _BtnViewCls = _BtnView
+
+    v = _BtnViewCls.alloc().initWithFrame_(rect)
+    v._title = title
+    v._fn    = action_fn
+    v._r, v._g, v._b = bg_r, bg_g, bg_b
+    v._down  = False
+    refs.append(v)
+    parent_view.addSubview_(v)
+    return v
 
 
 def show_overlay(text_or_stream, on_more, on_chat, on_stream_done=None,
-                 parent=None, pet_size: int = 0, pet_pos_ref: list | None = None) -> str:
-    """Display overlay. Returns reaction string ('good'/'dismiss'/etc).
-
-    If parent is given (a tk.Tk root), uses Toplevel + wait_window instead of
-    a new Tk + mainloop, so it can be called from within an existing event loop.
-    """
-
+                 parent=None, pet_size: int = 0, pet_pos_ref: list | None = None,
+                 _ui_queue=None, close_ref: list | None = None) -> str:
+    """Show overlay. Must be called from background thread with _ui_queue provided."""
+    import queue as _queue
     reaction = ["dismiss"]
-    if parent is not None:
-        root = tk.Toplevel(parent)
+    closed   = [False]
+
+    win_ref = [None]  # set by _show_overlay_impl after window creation
+
+    if close_ref is not None:
+        def _external_close():
+            closed[0] = True
+            if win_ref[0] is not None:
+                if _ui_queue is not None:
+                    _ui_queue.put(lambda: win_ref[0].close())
+                else:
+                    win_ref[0].close()
+        close_ref.append(_external_close)
+
+    def _build():
+        try:
+            _show_overlay_impl(text_or_stream, on_more, on_chat, on_stream_done,
+                               pet_pos_ref, reaction, closed, close_ref, win_ref)
+        except Exception:
+            import traceback; traceback.print_exc()
+            closed[0] = True
+
+    if _ui_queue is not None:
+        _ui_queue.put(_build)
     else:
-        root = tk.Tk()
-    root.withdraw()
-    root.title("")
-    root.attributes("-topmost", True)
-    root.attributes("-alpha", ALPHA)
-    root.configure(bg=BG)
-    root.resizable(False, False)
-    # Do NOT use overrideredirect — it breaks keyboard focus on macOS.
-    # Title bar is hidden via AppKit in _apply_rounded_corners instead.
+        _build()
 
-    # Set accessory policy
-    try:
-        from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
-        NSApplication.sharedApplication().setActivationPolicy_(NSApplicationActivationPolicyAccessory)
-    except Exception:
-        pass
+    import time
+    while not closed[0]:
+        time.sleep(0.05)
+    return reaction[0]
 
-    def _apply_rounded_corners():
-        try:
-            from AppKit import NSApp, NSColor, NSWindowButton
-            root.update_idletasks()
-            for w in NSApp.windows():
-                w.setBackgroundColor_(NSColor.clearColor())
-                w.setTitlebarAppearsTransparent_(True)
-                w.setTitleVisibility_(1)  # NSWindowTitleHidden
-                w.setStyleMask_(w.styleMask() | (1 << 15))  # NSWindowStyleMaskFullSizeContentView
-                # Hide traffic light buttons
-                for btn_type in (0, 1, 2):  # Close, Miniaturize, Zoom
-                    btn = w.standardWindowButton_(btn_type)
-                    if btn:
-                        btn.setHidden_(True)
-                cv = w.contentView()
-                cv.setWantsLayer_(True)
-                cv.layer().setCornerRadius_(RADIUS)
-                cv.layer().setMasksToBounds_(True)
-        except Exception:
-            pass
 
-    WIN_W = 420
-    WIN_H = [200]   # mutable so _resize can update it
-    MIN_H, MAX_H = 120, 400
-    HEADER_H = 30
-    BOTTOM_H = 46
+def _show_overlay_impl(text_or_stream, on_more, on_chat, on_stream_done,
+                       pet_pos_ref, reaction, closed, close_ref=None, win_ref=None):
+    global _OvWindowCls, _OvDelegateCls, _FadeTargetCls, _FollowTargetCls, _ChatFieldDelegateCls
+    from AppKit import (NSWindow, NSBorderlessWindowMask,
+                        NSBackingStoreBuffered, NSColor, NSView, NSTextView,
+                        NSScrollView, NSTextField, NSMakeRect, NSFont,
+                        NSScreen, NSMakeSize)
+    from Foundation import NSObject, NSTimer, NSAttributedString
 
-    screen_w = root.winfo_screenwidth()
-    screen_h = root.winfo_screenheight()
+    if _OvWindowCls is None:
+        class _OvWindowCls(NSWindow):
+            def canBecomeKeyWindow(self): return True
+            def sendEvent_(self, event):
+                import objc as _objc
+                from AppKit import NSKeyDown as _KD
+                if (event.type() == _KD and event.keyCode() == 36
+                        and hasattr(self, '_on_enter') and self._on_enter):
+                    self._on_enter()
+                    return
+                _objc.super(_OvWindowCls, self).sendEvent_(event)
 
-    def _resize_to_text():
-        root.update_idletasks()
-        text_box.configure(state="normal")
-        try:
-            # count display lines (accounts for word-wrap)
-            dlines = text_box.count("1.0", tk.END, "displaylines")[0] or 1
-            # measure one line height via first line bbox
-            lb = text_box.bbox("1.0")
-            line_h = lb[3] if lb else 18
-            content_h = dlines * line_h + 24
-        except Exception:
-            content_h = 60
-        text_box.configure(state="disabled")
+    if _OvDelegateCls is None:
+        class _OvDelegateCls(NSObject):
+            def windowWillClose_(self, notif):
+                self._closed[0] = True
 
-        new_h = max(MIN_H, min(MAX_H, HEADER_H + content_h + BOTTOM_H))
-        WIN_H[0] = new_h
+    if _FadeTargetCls is None:
+        class _FadeTargetCls(NSObject):
+            def tick_(self, timer):
+                if self._closed[0]:
+                    timer.invalidate(); return
+                self._steps[0] = min(self._steps[0] + ALPHA / 20, ALPHA)
+                self._win.setAlphaValue_(self._steps[0])
+                if self._steps[0] >= ALPHA:
+                    timer.invalidate()
+
+    if _FollowTargetCls is None:
+        class _FollowTargetCls(NSObject):
+            def follow_(self, timer):
+                if self._closed[0]:
+                    timer.invalidate(); return
+                self._resize()
+
+    if _ChatFieldDelegateCls is None:
+        import objc as _objc
+        class _ChatFieldDelegateCls(NSObject):
+            def control_textView_doCommandBySelector_(self, control, tv, sel):
+                if sel == b"insertNewline:":
+                    self._send()
+                    return True
+                return False
+            @_objc.python_method
+            def _setup_field(self, field):
+                field.setTarget_(self)
+                field.setAction_("fieldEnter:")
+            def fieldEnter_(self, sender):
+                self._send()
+
+    _refs    = []
+
+    screen_w = int(NSScreen.mainScreen().frame().size.width)
+    screen_h = int(NSScreen.mainScreen().frame().size.height)
+
+    def _pos(win_h):
         if pet_pos_ref and len(pet_pos_ref) == 4:
             px, py, pw, ph = pet_pos_ref
-            x = px + pw // 2 - WIN_W // 2  # center over pet horizontally
-            x = max(0, min(screen_w - WIN_W, x))
-            y = py - new_h - 8  # 8px gap above pet
+            # py is tkinter coord (Y=0 top); convert to AppKit (Y=0 bottom)
+            appkit_pet_y = screen_h - py - ph
+            ax = px + pw // 2 - WIN_W // 2
+            ax = max(0, min(screen_w - WIN_W, ax))
+            ay = appkit_pet_y + ph + GAP
         else:
-            margin = pet_size + 16 if pet_size else 24
-            x = screen_w - WIN_W - 24
-            y = screen_h - new_h - margin
-        root.geometry(f"{WIN_W}x{new_h}+{x}+{y}")
-        text_frame.place(x=0, y=HEADER_H, width=WIN_W, height=new_h - HEADER_H - BOTTOM_H)
-        bottom.place(x=RADIUS, y=new_h - BOTTOM_H + 2, width=WIN_W - RADIUS*2)
+            ax = screen_w - WIN_W - MARGIN_R
+            ay = screen_h - win_h - 100
+        return ax, ay
 
-    margin = pet_size + 16 if pet_size else 24
-    root.geometry(f"{WIN_W}x{WIN_H[0]}+{screen_w - WIN_W - 24}+{screen_h - WIN_H[0] - margin}")
+    WIN_H = [200]
+    ax, ay = _pos(WIN_H[0])
 
-    # ── Drag support ──────────────────────────────────────────────────────────
-    _drag = {"x": 0, "y": 0}
-    def _drag_start(e): _drag["x"] = e.x_root; _drag["y"] = e.y_root
-    def _drag_move(e):
-        dx = e.x_root - _drag["x"]; dy = e.y_root - _drag["y"]
-        nx = root.winfo_x() + dx;   ny = root.winfo_y() + dy
-        root.geometry(f"+{nx}+{ny}")
-        _drag["x"] = e.x_root;      _drag["y"] = e.y_root
+    win = _OvWindowCls.alloc().initWithContentRect_styleMask_backing_defer_(
+        NSMakeRect(ax, ay, WIN_W, WIN_H[0]),
+        NSBorderlessWindowMask, NSBackingStoreBuffered, False)
+    if win_ref is not None:
+        win_ref[0] = win
+    win._on_enter = None
+    win.setOpaque_(False)
+    win.setAlphaValue_(0.0)
+    win.setLevel_(4)  # above floating
 
-    # ── Header (compact) ──────────────────────────────────────────────────────
-    header = tk.Frame(root, bg=BG, pady=0)
-    header.place(x=RADIUS, y=6, width=WIN_W - RADIUS*2)
-    header.bind("<ButtonPress-1>",   _drag_start)
-    header.bind("<B1-Motion>",       _drag_move)
+    cv = win.contentView()
+    cv.setWantsLayer_(True)
+    cv.layer().setCornerRadius_(RADIUS)
+    cv.layer().setMasksToBounds_(True)
+    cv.layer().setBackgroundColor_(_cg_color(BG_R, BG_G, BG_B, ALPHA))
 
-    title_lbl = tk.Label(header, text="JARVIS", bg=BG, fg=ACCENT,
-                         font=("SF Pro Display", 9, "bold"), cursor="fleur")
-    title_lbl.pack(side=tk.LEFT)
-    title_lbl.bind("<ButtonPress-1>", _drag_start)
-    title_lbl.bind("<B1-Motion>",     _drag_move)
+    # ── Header ────────────────────────────────────────────────────────────────
+    header = NSView.alloc().initWithFrame_(NSMakeRect(0, WIN_H[0] - HEADER_H, WIN_W, HEADER_H))
+    header.setWantsLayer_(True)
+    header.layer().setBackgroundColor_(_cg_color(BG_R, BG_G, BG_B))
+    cv.addSubview_(header)
 
-    def _close_x():
-        _close("dismiss")
-    close_btn = tk.Label(header, text="×", bg=BG, fg=FG_DIM,
-                         font=("SF Pro Display", 13), cursor="hand2", padx=4)
-    close_btn.pack(side=tk.RIGHT)
-    close_btn.bind("<Button-1>", lambda e: _close_x())
-    close_btn.bind("<Enter>",    lambda e: close_btn.configure(fg=FG))
-    close_btn.bind("<Leave>",    lambda e: close_btn.configure(fg=FG_DIM))
+    title_field = NSTextField.alloc().initWithFrame_(NSMakeRect(12, 6, 200, 18))
+    title_field.setStringValue_("JARVIS")
+    title_field.setEditable_(False)
+    title_field.setBordered_(False)
+    title_field.setDrawsBackground_(False)
+    title_field.setTextColor_(NSColor.whiteColor())
+    title_field.setFont_(NSFont.fontWithName_size_("SF Pro Display Bold", 9) or NSFont.boldSystemFontOfSize_(9))
+    header.addSubview_(title_field)
 
-    # Thin separator
-    sep = tk.Frame(root, bg=BG_CARD, height=1)
-    sep.place(x=RADIUS, y=28, width=WIN_W - RADIUS*2)
+    # ── Scroll + text ─────────────────────────────────────────────────────────
+    scroll = NSScrollView.alloc().initWithFrame_(
+        NSMakeRect(0, BOTTOM_H, WIN_W, WIN_H[0] - HEADER_H - BOTTOM_H))
+    scroll.setHasVerticalScroller_(True)
+    scroll.setAutohidesScrollers_(True)
+    scroll.setDrawsBackground_(False)
+    cv.addSubview_(scroll)
 
-    # ── Text area ─────────────────────────────────────────────────────────────
-    text_frame = tk.Frame(root, bg=BG)
-    text_frame.place(x=0, y=HEADER_H, width=WIN_W, height=WIN_H[0] - HEADER_H - BOTTOM_H)
-
-    # Canvas-based scrollbar — native tk.Scrollbar ignores color on macOS 14 / Tk 9
-    sb_canvas = tk.Canvas(text_frame, width=8, bg=BG, highlightthickness=0)
-    sb_canvas.pack(side=tk.RIGHT, fill=tk.Y)
-
-    def _sb_set(lo, hi):
-        lo, hi = float(lo), float(hi)
-        sb_canvas.delete("all")
-        h = sb_canvas.winfo_height()
-        if h < 2:
-            return
-        y0 = int(lo * h) + 2
-        y1 = max(y0 + 20, int(hi * h) - 2)
-        r = 3
-        sb_canvas.create_arc(1, y0, 1+2*r, y0+2*r, start=90, extent=180, fill=BG_CARD, outline=BG_CARD)
-        sb_canvas.create_arc(7-2*r, y0, 7, y0+2*r, start=270, extent=180, fill=BG_CARD, outline=BG_CARD)
-        sb_canvas.create_arc(1, y1-2*r, 1+2*r, y1, start=180, extent=180, fill=BG_CARD, outline=BG_CARD)
-        sb_canvas.create_arc(7-2*r, y1-2*r, 7, y1, start=0, extent=180, fill=BG_CARD, outline=BG_CARD)
-        sb_canvas.create_rectangle(1, y0+r, 7, y1-r, fill=BG_CARD, outline=BG_CARD)
-
-    def _sb_click(e):
-        h = sb_canvas.winfo_height()
-        text_box.yview_moveto(e.y / h)
-    sb_canvas.bind("<Button-1>", _sb_click)
-    sb_canvas.bind("<B1-Motion>", _sb_click)
-
-    text_box = tk.Text(
-        text_frame, wrap=tk.WORD,
-        bg=BG, fg=FG,
-        font=("SF Pro Display", 11),
-        relief="flat", borderwidth=0,
-        highlightthickness=0,
-        padx=16, pady=8,
-        insertbackground=FG,
-        selectbackground=BTN_BG,
-        yscrollcommand=_sb_set,
-    )
-    text_box.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    text_view = NSTextView.alloc().initWithFrame_(
+        NSMakeRect(0, 0, WIN_W - 16, WIN_H[0] - HEADER_H - BOTTOM_H))
+    text_view.setEditable_(False)
+    text_view.setSelectable_(True)
+    text_view.setDrawsBackground_(False)
+    text_view.setTextContainerInset_(NSMakeSize(8, 8))
+    text_view.textContainer().setWidthTracksTextView_(True)
+    scroll.setDocumentView_(text_view)
 
     accumulated = [""]
 
-    def _append_chunk(chunk: str):
+    def _set_text(t):
+        accumulated[0] = t
+        astr = _make_attr_string(t)
+        text_view.textStorage().setAttributedString_(astr)
+        _resize()
+
+    def _append_text(chunk):
         accumulated[0] += chunk
-        text_box.configure(state="normal")
-        text_box.insert(tk.END, chunk)
-        text_box.see(tk.END)
-        text_box.configure(state="disabled")
+        from Foundation import NSAttributedString
+        from AppKit import NSFont, NSForegroundColorAttributeName, NSFontAttributeName
+        font  = NSFont.fontWithName_size_("SF Pro Display", 13) or NSFont.systemFontOfSize_(13)
+        attrs = {NSFontAttributeName: font, NSForegroundColorAttributeName: NSColor.whiteColor()}
+        astr  = NSAttributedString.alloc().initWithString_attributes_(chunk, attrs)
+        text_view.textStorage().appendAttributedString_(astr)
+        text_view.scrollToEndOfDocument_(None)
+        _resize()
 
-    def _set_text(new_text: str):
-        accumulated[0] = new_text
-        _render_markdown(text_box, new_text)
-
-    def _fade_in():
-        step = ALPHA / 30
-        def _tick(current):
-            if closed[0]:
-                return
-            nxt = min(current + step, ALPHA)
-            root.attributes("-alpha", nxt)
-            if nxt < ALPHA:
-                root.after(15, _tick, nxt)
-        root.after(15, _tick, 0)
-
-    def _show():
-        _resize_to_text()
-        root.update_idletasks()
-        _apply_rounded_corners()
-        root.attributes("-alpha", 0)
-        root.attributes("-topmost", True)
-        root.deiconify()
-        root.update_idletasks()
-        _fade_in()
-        if pet_pos_ref is not None:
-            _poll_pet_pos()
-
-    def _poll_pet_pos():
+    def _resize():
         if closed[0]:
             return
-        _resize_to_text()
-        root.after(50, _poll_pet_pos)
+        text_view.layoutManager().ensureLayoutForTextContainer_(text_view.textContainer())
+        used_h = text_view.layoutManager().usedRectForTextContainer_(text_view.textContainer()).size.height
+        content_h = int(used_h) + 24
+        chat_extra = CHAT_ROW_H if not chat_field.isHidden() else 0
+        bottom = BOTTOM_H + chat_extra
+        new_h = max(MIN_H, min(MAX_H, HEADER_H + content_h + bottom))
+        WIN_H[0] = new_h
+        ax2, ay2 = _pos(new_h)
+        win.setFrame_display_(NSMakeRect(ax2, ay2, WIN_W, new_h), True)
+        header.setFrame_(NSMakeRect(0, new_h - HEADER_H, WIN_W, HEADER_H))
+        scroll.setFrame_(NSMakeRect(0, bottom, WIN_W, new_h - HEADER_H - bottom))
+        _layout_buttons(new_h)
 
-    closed = [False]
+    # ── Bottom buttons ─────────────────────────────────────────────────────────
+    BTN_H = 30
+    _btns = {}
 
+    def _layout_buttons(win_h):
+        y = 14
+        BTN_W = 70
+        # buttons row always visible
+        _btns['good'].setFrame_(NSMakeRect(12, y, BTN_W, BTN_H))
+        _btns['more'].setFrame_(NSMakeRect(WIN_W - 12 - BTN_W*3 - 8*2, y, BTN_W, BTN_H))
+        _btns['chat'].setFrame_(NSMakeRect(WIN_W - 12 - BTN_W*2 - 8,   y, BTN_W, BTN_H))
+        _btns['dismiss'].setFrame_(NSMakeRect(WIN_W - 12 - BTN_W,       y, BTN_W, BTN_H))
+        # chat input row above buttons
+        if not chat_field.isHidden():
+            chat_y = y + BTN_H + 12
+            send_w = 60
+            chat_field.setFrame_(NSMakeRect(12, chat_y, WIN_W - 12 - send_w - 8 - 12, BTN_H))
+            _btns['send'].setFrame_(NSMakeRect(WIN_W - 12 - send_w, chat_y, send_w, BTN_H))
+            _btns['send'].setHidden_(False)
+        else:
+            _btns['send'].setHidden_(True)
+
+    def _close(r):
+        reaction[0] = r
+        closed[0] = True
+        win.close()
+
+    def _on_more():
+        _set_text("Thinking…")
+        def _worker():
+            result = on_more()
+            if not closed[0]:
+                _on_main(lambda: _set_text(result))
+        threading.Thread(target=_worker, daemon=True).start()
+
+    # Chat input (hidden until Chat button clicked)
+    CHAT_INPUT_H = 30
+    chat_field = NSTextField.alloc().initWithFrame_(
+        NSMakeRect(12, 10, WIN_W - 12 - 60 - 8 - 12, CHAT_INPUT_H))
+    chat_field.setPlaceholderString_("Ask a question… (Enter to send)")
+    chat_field.setHidden_(True)
+    chat_field.setWantsLayer_(True)
+    chat_field.layer().setCornerRadius_(6.0)
+    chat_field.layer().setBackgroundColor_(_cg_color(1, 1, 1, 0.12))
+    chat_field.setTextColor_(NSColor.whiteColor())
+    chat_field.setFont_(NSFont.fontWithName_size_("SF Pro Display", 16) or NSFont.systemFontOfSize_(16))
+    chat_field.setBordered_(True)
+    chat_field.setBezelStyle_(0)  # NSTextFieldSquareBezel
+    chat_field.setFocusRingType_(1)  # NSFocusRingTypeNone
+    chat_field.setDrawsBackground_(False)
+    cv.addSubview_(chat_field)
+
+    _ChatDelegate = None
+
+    def _on_chat_send():
+        msg = chat_field.stringValue().strip()
+        if not msg:
+            return
+        chat_field.setStringValue_("")
+        chat_field.setHidden_(True)
+        win._on_enter = None
+        _resize()
+        _set_text("Thinking…")
+        def _worker():
+            result = on_chat(msg)
+            if not closed[0]:
+                _on_main(lambda: _set_text(result))
+        threading.Thread(target=_worker, daemon=True).start()
+
+    chat_delegate = _ChatFieldDelegateCls.alloc().init()
+    chat_delegate._send = _on_chat_send
+    _refs.append(chat_delegate)
+    chat_field.setDelegate_(chat_delegate)
+    chat_delegate._setup_field(chat_field)
+
+    def _on_chat_click():
+        chat_field.setHidden_(False)
+        win._on_enter = _on_chat_send
+        win.makeKeyWindow()
+        _resize()
+        win.makeFirstResponder_(chat_field)
+
+    _btns['good']    = _button(cv, "✓ Good",   NSMakeRect(12, 10, 80, BTN_H), GOOD_R, GOOD_G, GOOD_B, lambda: _close("good"), _refs)
+    _btns['more']    = _button(cv, "More",      NSMakeRect(0, 10, 60, BTN_H),  BTN_R, BTN_G, BTN_B, _on_more, _refs)
+    _btns['chat']    = _button(cv, "Chat",      NSMakeRect(0, 10, 60, BTN_H),  BTN_R, BTN_G, BTN_B, _on_chat_click, _refs)
+    _btns['dismiss'] = _button(cv, "Dismiss",   NSMakeRect(0, 10, 60, BTN_H),  BTN_R, BTN_G, BTN_B, lambda: _close("dismiss"), _refs)
+    _btns['send']    = _button(cv, "Send",      NSMakeRect(0, 10, 60, BTN_H),  BTN_R, BTN_G, BTN_B, _on_chat_send, _refs)
+    _btns['send'].setHidden_(True)
+    _layout_buttons(WIN_H[0])
+
+    # ── Drag (unused but kept for future) ─────────────────────────────────────
+
+    ov_delegate = _OvDelegateCls.alloc().init()
+    ov_delegate._closed = closed
+    _refs.append(ov_delegate)
+    win.setDelegate_(ov_delegate)
+
+    # ── Show & fade in ────────────────────────────────────────────────────────
+    def _show_win():
+        win.orderFrontRegardless()
+        # Animate alpha via NSTimer steps
+        _alpha_steps = [0.0]
+        ft = _FadeTargetCls.alloc().init()
+        ft._closed = closed
+        ft._steps  = _alpha_steps
+        ft._win    = win
+        _refs.append(ft)
+        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.015, ft, "tick:", None, True)
+
+    # ── Pet follow ────────────────────────────────────────────────────────────
+    if pet_pos_ref is not None:
+        follow_target = _FollowTargetCls.alloc().init()
+        follow_target._closed  = closed
+        follow_target._resize  = _resize
+        _refs.append(follow_target)
+        from Foundation import NSTimer
+        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.05, follow_target, "follow:", None, True)
+
+    # ── Stream or static ──────────────────────────────────────────────────────
     if isinstance(text_or_stream, str):
         _set_text(text_or_stream)
-        root.after(0, _show)
+        _show_win()
     else:
         def _stream_worker():
             first = True
@@ -334,103 +498,13 @@ def show_overlay(text_or_stream, on_more, on_chat, on_stream_done=None,
                     break
                 if isinstance(item, tuple):
                     if not closed[0]:
-                        root.after(0, _render_markdown, text_box, accumulated[0])
-                        root.after(10, _resize_to_text)
+                        _make_attr_string(accumulated[0])
                     if on_stream_done:
                         on_stream_done(item, accumulated[0])
                 else:
                     if first:
-                        root.after(0, _show)
+                        _on_main(_show_win)
                         first = False
                     if not closed[0]:
-                        root.after(0, _append_chunk, item)
+                        _on_main(lambda chunk=item: _append_text(chunk))
         threading.Thread(target=_stream_worker, daemon=True).start()
-
-    CHAT_H = 44
-
-    # ── Chat input (hidden initially) ─────────────────────────────────────────
-    chat_frame = tk.Frame(root, bg=BG)
-
-    chat_entry = tk.Entry(chat_frame, font=("SF Pro Display", 10),
-                          relief="flat", bg=BG_CARD, fg=FG,
-                          insertbackground=FG, highlightthickness=0, bd=0)
-    chat_entry.place(x=8, y=8, relwidth=1.0, width=-88, height=28)
-    chat_entry.bind("<Return>", lambda e: on_send_chat())
-
-    send_btn = _pill_button(chat_frame, "Send", lambda: on_send_chat(), BTN_BG, BTN_FG)
-    send_btn.place(relx=1.0, x=-76, y=6, width=68, height=32)
-
-    def _run_in_thread(fn, *args):
-        def worker():
-            result = fn(*args)
-            if not closed[0]:
-                root.after(0, _set_text_and_resize, result)
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _set_text_and_resize(new_text: str):
-        _set_text(new_text)
-        _resize_to_text()
-        if chat_visible[0]:
-            _layout_with_chat()
-
-    chat_visible = [False]
-
-    def on_send_chat():
-        msg = chat_entry.get().strip()
-        if not msg:
-            return
-        chat_entry.delete(0, tk.END)
-        chat_visible[0] = False
-        chat_frame.place_forget()
-        _set_text("Thinking…")
-        _resize_to_text()
-        _run_in_thread(on_chat, msg)
-
-    # ── Bottom bar ────────────────────────────────────────────────────────────
-    bottom = tk.Frame(root, bg=BG)
-    bottom.place(x=RADIUS, y=WIN_H[0] - BOTTOM_H + 2, width=WIN_W - RADIUS*2)
-
-    def _close(r):
-        reaction[0] = r
-        closed[0] = True
-        try:
-            root.destroy()
-        except Exception:
-            pass
-
-    good_btn = _pill_button(bottom, "✓  Good", lambda: _close("good"),
-                            BTN_GOOD_BG, BTN_GOOD_FG, bold=True)
-    good_btn.pack(side=tk.LEFT)
-
-    right = tk.Frame(bottom, bg=BG)
-    right.pack(side=tk.RIGHT)
-
-    def on_more_click():
-        _set_text("Thinking…")
-        _run_in_thread(on_more)
-
-    def _layout_with_chat():
-        _resize_to_text()
-        new_h = min(MAX_H, WIN_H[0] + CHAT_H)
-        WIN_H[0] = new_h
-        x = screen_w - WIN_W - 24
-        y = screen_h - new_h - 100
-        root.geometry(f"{WIN_W}x{new_h}+{x}+{y}")
-        text_frame.place(x=0, y=HEADER_H, width=WIN_W, height=new_h - HEADER_H - BOTTOM_H - CHAT_H)
-        chat_frame.place(x=RADIUS, y=new_h - BOTTOM_H - CHAT_H + 4, width=WIN_W - RADIUS*2, height=CHAT_H)
-        bottom.place(x=RADIUS, y=new_h - BOTTOM_H + 2, width=WIN_W - RADIUS*2)
-        root.after(10, lambda: chat_entry.focus_set())
-
-    def on_chat_click():
-        chat_visible[0] = True
-        _layout_with_chat()
-        root.after(80, chat_entry.focus_set)
-
-    for label, cmd in [("More", on_more_click), ("Chat", on_chat_click), ("Dismiss", lambda: _close("dismiss"))]:
-        _pill_button(right, label, cmd, BTN_BG, BTN_FG).pack(side=tk.LEFT, padx=(0, 6))
-
-    if parent is not None:
-        root.wait_window()
-    else:
-        root.mainloop()
-    return reaction[0]

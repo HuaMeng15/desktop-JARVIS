@@ -133,13 +133,11 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
     lock_thread.start()
 
     def _show_overlay_main(text, on_more, on_chat, on_stream_done=None):
-        """Post show_overlay to the main thread and block until it returns."""
-        result = queue.Queue()
-        ui_queue.put(lambda: result.put(
-            show_overlay(text, on_more=on_more, on_chat=on_chat,
-                         on_stream_done=on_stream_done,
-                         pet_pos_ref=pet_pos_ref)))
-        return result.get()
+        """Run show_overlay — posts UI work to main thread, blocks background thread until closed."""
+        return show_overlay(text, on_more=on_more, on_chat=on_chat,
+                            on_stream_done=on_stream_done,
+                            pet_pos_ref=pet_pos_ref,
+                            _ui_queue=ui_queue)
 
     def _on_pet_capture():
         """Left-click on pet: capture screen after 1s and trigger hint."""
