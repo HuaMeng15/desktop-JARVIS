@@ -108,7 +108,7 @@ def _format_recap(records) -> str:
 
 def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
          tk_root_ref: list | None = None, static_count: list | None = None,
-         pet_pos_ref: list | None = None):
+         pet_pos_ref: list | None = None, thinking_ref: list | None = None):
     state = [State.CAPTURING]
     # paused is passed in (shared with pet)
     frame_monitor = FrameMonitor()
@@ -137,27 +137,40 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
         return show_overlay(text, on_more=on_more, on_chat=on_chat,
                             on_stream_done=on_stream_done,
                             pet_pos_ref=pet_pos_ref,
+                            on_thinking=_set_thinking,
                             _ui_queue=ui_queue)
+
+    def _set_thinking(val: bool):
+        if thinking_ref is not None:
+            thinking_ref[0] = val
+            if tk_root_ref and tk_root_ref[0]:
+                ui_queue.put(lambda: tk_root_ref[0].contentView().setNeedsDisplay_(True))
 
     def _on_pet_capture():
         """Left-click on pet: capture screen after 1s and trigger hint."""
-        if paused[0] or state[0] != State.CAPTURING:
+        if paused[0]:
             return
+        print(f"[pet] capture triggered (state={state[0].name})")
+        state[0] = State.OVERLAY
         try:
             b64, raw, cx, cy, sw, sh = capture_screen(monitor_index=MONITOR_INDEX)
         except Exception as e:
             print(f"[pet] capture error: {e}")
+            state[0] = State.CAPTURING
             return
-        state[0] = State.OVERLAY
         triggered_b64[0] = b64
+        _set_thinking(True)
 
         def _run():
             try:
                 hint = get_hint(b64, cx, cy, sw, sh, 0)
-                pending_hint.put((hint, b64, raw, cx, cy, None))
+                print(f"[pet] hint: needs={hint.needs_hint} conf={hint.confidence} reason={hint.reason}")
+                pending_hint.put((hint, b64, raw, cx, cy, None, True))
             except Exception as e:
                 print(f"[pet] hint error: {e}")
                 state[0] = State.CAPTURING
+            finally:
+                _set_thinking(False)
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -170,8 +183,14 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
 
         # Check for pending hint result (from background get_hint thread)
         try:
-            hint, h_b64, h_bytes, h_cx, h_cy, h_selection = pending_hint.get_nowait()
-            if hint.needs_hint and hint.confidence != "low":
+            item = pending_hint.get_nowait()
+            hint, h_b64, h_bytes, h_cx, h_cy, h_selection = item[:6]
+            forced = item[6] if len(item) > 6 else False
+            show = hint.needs_hint and hint.confidence != "low"
+            if not show and not forced:
+                print(f"[hint] skipped: needs={hint.needs_hint} conf={hint.confidence} reason={hint.reason}")
+                state[0] = State.CAPTURING
+            else:
                 log_key = log_llm_call("stuck", hint.total_ms, hint.total_ms,
                                        hint.input_tokens, hint.output_tokens,
                                        response_text=hint.hint, image_bytes=h_bytes,
@@ -195,14 +214,17 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
                         text = f"Error: {e}"
                     return text
 
-                overlay_text = hint.hint
-                if hint.confidence == "medium":
+                if not hint.needs_hint:
+                    overlay_text = f"*(nothing specific to suggest)* {hint.reason}"
+                elif hint.confidence == "medium":
                     overlay_text = f"*({hint.category})* {hint.hint}"
+                else:
+                    overlay_text = hint.hint
 
                 reaction = _show_overlay_main(overlay_text, on_more=on_more, on_chat=on_chat)
                 update_llm_reaction(log_key, reaction)
                 frame_monitor.reset()
-            state[0] = State.CAPTURING
+                state[0] = State.CAPTURING
         except queue.Empty:
             pass
 
@@ -392,9 +414,10 @@ if __name__ == "__main__":
     tk_root_ref = [None]
     static_count_shared = [0]
     pet_pos_ref = [0, 0, 0, 0]
+    thinking_ref = [False]
 
     t = threading.Thread(
-        target=main, args=(ui_queue, paused_shared, on_capture_ref, tk_root_ref, static_count_shared, pet_pos_ref), daemon=True)
+        target=main, args=(ui_queue, paused_shared, on_capture_ref, tk_root_ref, static_count_shared, pet_pos_ref, thinking_ref), daemon=True)
     t.start()
 
     run_pet_loop(
@@ -404,4 +427,5 @@ if __name__ == "__main__":
         root_ref=tk_root_ref,
         on_pause=lambda is_paused: static_count_shared.__setitem__(0, 0),
         pet_pos_ref=pet_pos_ref,
+        thinking_ref=thinking_ref,
     )

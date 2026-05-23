@@ -10,7 +10,8 @@ _ICON_DIR = Path(__file__).parent / "src" / "icons"
 
 def run_pet_loop(on_capture, paused_ref: list, ui_queue: queue.Queue,
                 root_ref: list | None = None, on_pause=None,
-                pet_pos_ref: list | None = None) -> None:
+                pet_pos_ref: list | None = None,
+                thinking_ref: list | None = None) -> None:
     from AppKit import (NSApplication, NSApplicationActivationPolicyAccessory,
                         NSBorderlessWindowMask, NSColor, NSImage,
                         NSMakeRect, NSWindow, NSBackingStoreBuffered, NSScreen,
@@ -88,6 +89,7 @@ def run_pet_loop(on_capture, paused_ref: list, ui_queue: queue.Queue,
 
     ns_img = NSImage.alloc().initWithContentsOfFile_(str(_ICON_DIR / "jarvis.heic"))
     ns_img_pause = NSImage.alloc().initWithContentsOfFile_(str(_ICON_DIR / "pause.heic"))
+    ns_img_think = NSImage.alloc().initWithContentsOfFile_(str(_ICON_DIR / "thinking.heic"))
     _iw = ns_img.size().width
     _ih = ns_img.size().height
     PET_W = PET_SIZE
@@ -112,7 +114,12 @@ def run_pet_loop(on_capture, paused_ref: list, ui_queue: queue.Queue,
     class _PetView(NSView):
         def isOpaque(self): return False
         def drawRect_(self, rect):
-            img = ns_img_pause if paused_ref[0] else ns_img
+            if paused_ref[0]:
+                img = ns_img_pause
+            elif thinking_ref and thinking_ref[0]:
+                img = ns_img_think
+            else:
+                img = ns_img
             img.drawInRect_fromRect_operation_fraction_(
                 NSMakeRect(0, 0, PET_W, PET_H),
                 NSMakeRect(0, 0, 0, 0), 18, 1.0)

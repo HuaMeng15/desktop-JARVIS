@@ -167,7 +167,8 @@ def _button(parent_view, title, rect, bg_r, bg_g, bg_b, action_fn, refs):
 
 def show_overlay(text_or_stream, on_more, on_chat, on_stream_done=None,
                  parent=None, pet_size: int = 0, pet_pos_ref: list | None = None,
-                 _ui_queue=None, close_ref: list | None = None) -> str:
+                 _ui_queue=None, close_ref: list | None = None,
+                 on_thinking=None) -> str:
     """Show overlay. Must be called from background thread with _ui_queue provided."""
     import queue as _queue
     reaction = ["dismiss"]
@@ -188,7 +189,8 @@ def show_overlay(text_or_stream, on_more, on_chat, on_stream_done=None,
     def _build():
         try:
             _show_overlay_impl(text_or_stream, on_more, on_chat, on_stream_done,
-                               pet_pos_ref, reaction, closed, close_ref, win_ref)
+                               pet_pos_ref, reaction, closed, close_ref, win_ref,
+                               on_thinking)
         except Exception:
             import traceback; traceback.print_exc()
             closed[0] = True
@@ -205,7 +207,8 @@ def show_overlay(text_or_stream, on_more, on_chat, on_stream_done=None,
 
 
 def _show_overlay_impl(text_or_stream, on_more, on_chat, on_stream_done,
-                       pet_pos_ref, reaction, closed, close_ref=None, win_ref=None):
+                       pet_pos_ref, reaction, closed, close_ref=None, win_ref=None,
+                       on_thinking=None):
     global _OvWindowCls, _OvDelegateCls, _FadeTargetCls, _FollowTargetCls, _ChatFieldDelegateCls
     from AppKit import (NSWindow, NSBorderlessWindowMask,
                         NSBackingStoreBuffered, NSColor, NSView, NSTextView,
@@ -395,8 +398,12 @@ def _show_overlay_impl(text_or_stream, on_more, on_chat, on_stream_done,
 
     def _on_more():
         _set_text("Thinking…")
+        if on_thinking:
+            on_thinking(True)
         def _worker():
             result = on_more()
+            if on_thinking:
+                on_thinking(False)
             if not closed[0]:
                 _on_main(lambda: _set_text(result))
         threading.Thread(target=_worker, daemon=True).start()
@@ -429,8 +436,12 @@ def _show_overlay_impl(text_or_stream, on_more, on_chat, on_stream_done,
         win._on_enter = None
         _resize()
         _set_text("Thinking…")
+        if on_thinking:
+            on_thinking(True)
         def _worker():
             result = on_chat(msg)
+            if on_thinking:
+                on_thinking(False)
             if not closed[0]:
                 _on_main(lambda: _set_text(result))
         threading.Thread(target=_worker, daemon=True).start()

@@ -62,18 +62,32 @@ def test_pet():
 
     ui_q = queue.Queue()
     paused = [False]
+    thinking_ref = [False]
+    root_ref = [None]
+
+    def set_thinking(val):
+        thinking_ref[0] = val
+        if root_ref[0]:
+            ui_q.put(lambda: root_ref[0].contentView().setNeedsDisplay_(True))
 
     def fake_capture():
-        print("[pet] capture triggered — showing hint window")
-        threading.Thread(
-            target=lambda: show_overlay(HINT, on_more=on_more, on_chat=on_chat, _ui_queue=ui_q),
-            daemon=True,
-        ).start()
+        print("[pet] capture triggered — thinking...")
+        set_thinking(True)
+
+        def _work():
+            time.sleep(1.5)
+            set_thinking(False)
+            show_overlay(HINT, on_more=on_more, on_chat=on_chat,
+                         on_thinking=set_thinking, _ui_queue=ui_q)
+
+        threading.Thread(target=_work, daemon=True).start()
 
     run_pet_loop(
         on_capture=fake_capture,
         paused_ref=paused,
         ui_queue=ui_q,
+        root_ref=root_ref,
+        thinking_ref=thinking_ref,
         on_pause=lambda is_paused: print(f"[pet] {'paused' if is_paused else 'resumed'}"),
     )
 
@@ -86,35 +100,43 @@ def test_both():
     ui_q = queue.Queue()
     paused = [False]
     pet_pos_ref = [0, 0, 0, 0]
-    active_close = [None]  # close fn for current overlay
+    thinking_ref = [False]
+    root_ref = [None]
+    active_close = [None]
+
+    def set_thinking(val):
+        thinking_ref[0] = val
+        if root_ref[0]:
+            ui_q.put(lambda: root_ref[0].contentView().setNeedsDisplay_(True))
 
     def fake_capture():
-        print("[pet] capture triggered — showing hint window")
-        close_ref = []
-        active_close[0] = None
-        threading.Thread(
-            target=lambda: show_overlay(HINT, on_more=on_more, on_chat=on_chat,
-                                        pet_pos_ref=pet_pos_ref, _ui_queue=ui_q,
-                                        close_ref=close_ref),
-            daemon=True,
-        ).start()
-        # show_overlay populates close_ref synchronously before blocking
-        import time; time.sleep(0.05)
-        if close_ref:
-            active_close[0] = close_ref[0]
+        print("[pet] capture triggered — thinking...")
+        set_thinking(True)
+
+        def _work():
+            time.sleep(1.5)
+            set_thinking(False)
+            close_ref = []
+            active_close[0] = None
+            show_overlay(HINT, on_more=on_more, on_chat=on_chat,
+                         on_thinking=set_thinking,
+                         pet_pos_ref=pet_pos_ref, _ui_queue=ui_q, close_ref=close_ref)
+
+        threading.Thread(target=_work, daemon=True).start()
+        time.sleep(0.05)
 
     def on_pause(is_paused):
         print(f"[pet] {'paused' if is_paused else 'resumed'}")
         if is_paused and active_close[0]:
-            print(f"[pet] closing hint window, close_fn={active_close[0]}")
             active_close[0]()
-            print("[pet] close called")
 
     run_pet_loop(
         on_capture=fake_capture,
         paused_ref=paused,
         ui_queue=ui_q,
+        root_ref=root_ref,
         pet_pos_ref=pet_pos_ref,
+        thinking_ref=thinking_ref,
         on_pause=on_pause,
     )
 
