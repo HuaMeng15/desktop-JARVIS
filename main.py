@@ -376,7 +376,10 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
                         except Exception as e:
                             print(f"[hint] error: {e}")
                             state[0] = State.CAPTURING
+                        finally:
+                            _set_thinking(False)
 
+                    _set_thinking(True)
                     threading.Thread(target=_run_selection_hint, daemon=True).start()
 
         # --- Stuck-screen detection ---
@@ -398,7 +401,10 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
                 except Exception as e:
                     print(f"[hint] error: {e}")
                     state[0] = State.CAPTURING
+                finally:
+                    _set_thinking(False)
 
+            _set_thinking(True)
             threading.Thread(target=_run_hint, daemon=True).start()
 
         elapsed = time.monotonic() - loop_start
