@@ -187,6 +187,7 @@ def show_overlay(text_or_stream, on_more, on_chat, on_stream_done=None,
         close_ref.append(_external_close)
 
     def _build():
+        print("[display] _build running on main thread", flush=True)
         try:
             _show_overlay_impl(text_or_stream, on_more, on_chat, on_stream_done,
                                pet_pos_ref, reaction, closed, close_ref, win_ref,
@@ -196,12 +197,18 @@ def show_overlay(text_or_stream, on_more, on_chat, on_stream_done=None,
             closed[0] = True
 
     if _ui_queue is not None:
+        print("[display] queuing _build", flush=True)
         _ui_queue.put(_build)
     else:
         _build()
 
     import time
+    deadline = time.monotonic() + 300  # 5-minute safety timeout
     while not closed[0]:
+        if time.monotonic() > deadline:
+            print("[display] show_overlay timed out — forcing close", flush=True)
+            closed[0] = True
+            break
         time.sleep(0.05)
     return reaction[0]
 

@@ -22,6 +22,7 @@ from stats import log_activity_call, log_llm_call, update_llm_reaction
 MONITOR_INDEX = 1
 STATIC_THRESHOLD = 5       # seconds of dHash==0 before stuck-screen trigger
 SWITCH_THRESHOLD = 20      # dHash score above this = context switch
+CURSOR_TOLERANCE = 20      # pixels — cursor movement within this radius counts as static
 
 MORE_PROMPT = (
     "Give more detailed advice about what I should do on this screen. "
@@ -117,6 +118,10 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
         static_count = [0]
     triggered_b64 = [None]
     pending_hint = queue.Queue()  # HintResult posted from background thread
+
+    # Cursor idle tracking
+    last_cursor = [None]  # (x, y) of last position that reset the cursor-static counter
+    cursor_static_count = [0]
 
     # Clipboard tracking
     last_clipboard_count = [get_clipboard_change_count()]
@@ -224,6 +229,10 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
                 reaction = _show_overlay_main(overlay_text, on_more=on_more, on_chat=on_chat)
                 update_llm_reaction(log_key, reaction)
                 frame_monitor.reset()
+                cursor_static_count[0] = 0
+                # Sync clipboard state to current so copies made during overlay don't re-trigger
+                last_clipboard_count[0] = get_clipboard_change_count()
+                last_triggered_clipboard[0] = get_clipboard_text()
                 state[0] = State.CAPTURING
         except queue.Empty:
             pass
@@ -267,6 +276,8 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
 
             _show_overlay_main(overlay_text, on_more=_make_more(), on_chat=_make_chat())
             frame_monitor.reset()
+            last_clipboard_count[0] = get_clipboard_change_count()
+            last_triggered_clipboard[0] = get_clipboard_text()
             state[0] = State.CAPTURING
 
         if state[0] == State.OVERLAY:
@@ -317,23 +328,46 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
         else:
             static_count[0] = 0
 
+        # Cursor idle tracking
+        if last_cursor[0] is None:
+            last_cursor[0] = (cx, cy)
+        dx = cx - last_cursor[0][0]
+        dy = cy - last_cursor[0][1]
+        dist = (dx * dx + dy * dy) ** 0.5
+        if dist > CURSOR_TOLERANCE:
+            cursor_static_count[0] = 0
+            last_cursor[0] = (cx, cy)
+            print(f"[cursor] moved {dist:.0f}px → ({cx},{cy}), cursor_static reset")
+        else:
+            cursor_static_count[0] += 1
+
         psnr_str = "inf" if psnr == float("inf") else f"{psnr:.1f}"
-        print(f"[{ts.strftime('%H:%M:%S')}] dHash={score} PSNR={psnr_str} static={static_count[0]}s")
+        print(f"[{ts.strftime('%H:%M:%S')}] dHash={score} PSNR={psnr_str} screen_static={static_count[0]}s cursor_static={cursor_static_count[0]}s")
+
+        # Warn when screen is idle but cursor is still moving
+        if static_count[0] >= STATIC_THRESHOLD and cursor_static_count[0] < STATIC_THRESHOLD and state[0] == State.CAPTURING:
+            print(f"[hint] screen idle ({static_count[0]}s) but cursor active — waiting for cursor to settle")
 
         # --- Context-switch detection ---
         if score > SWITCH_THRESHOLD and not in_post_switch[0]:
             in_post_switch[0] = True
             post_switch_scores.clear()
             pending_activity_bytes[0] = prev_image_bytes[0]  # "from" screenshot
-            print(f"[activity] Context switch detected (dHash={score})")
+            print(f"[activity] Context switch candidate (dHash={score}) — waiting to confirm")
 
         elif in_post_switch[0]:
             post_switch_scores.append(score)
-            if len(post_switch_scores) >= 2:
+            if len(post_switch_scores) >= 3:
                 in_post_switch[0] = False
-                settled = all(s < 10 for s in post_switch_scores)
+                # Real app switch: screen fully settles (last 2 frames near-zero)
+                # Zoom/scroll: scores stay elevated (5-15) across all frames
+                settled = all(s < 5 for s in post_switch_scores[-2:])
 
-                if settled:
+                if not settled:
+                    # Zoom/scroll or wandering — check if still switching
+                    pending_activity_bytes[0] = None
+                    print(f"[activity] False switch (scores={post_switch_scores}) — ignored")
+                else:
                     # Fire ONE background summary of the "from" page
                     if pending_activity_bytes[0] is not None:
                         _query_activity_background(pending_activity_bytes[0], activity_tracker)
@@ -343,13 +377,8 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
                     if match:
                         print(f"[activity] Matched previous task: {match.app}")
                         pending_overlay[0] = ("previous_work", match)
-                else:
-                    # Still wandering — show recap, skip summary query
-                    pending_activity_bytes[0] = None
-                    recent = activity_tracker.recent(hours=2)
-                    if recent:
-                        print(f"[activity] Wandering — showing recap of {len(recent)} tasks")
-                        pending_overlay[0] = ("recap", recent)
+                    else:
+                        print(f"[activity] Context switch confirmed and settled")
 
         prev_image_bytes[0] = image_bytes
 
@@ -383,9 +412,11 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
                     threading.Thread(target=_run_selection_hint, daemon=True).start()
 
         # --- Stuck-screen detection ---
-        if static_count[0] >= STATIC_THRESHOLD and state[0] == State.CAPTURING and not paused[0]:
+        both_static = static_count[0] >= STATIC_THRESHOLD and cursor_static_count[0] >= STATIC_THRESHOLD
+        if both_static and state[0] == State.CAPTURING and not paused[0]:
             state[0] = State.OVERLAY
             static_count[0] = 0
+            cursor_static_count[0] = 0
             triggered_b64[0] = image_b64
             triggered_bytes = image_bytes
             _cx, _cy, _sw, _sh = cx, cy, screen_w, screen_h
@@ -431,7 +462,7 @@ if __name__ == "__main__":
         paused_ref=paused_shared,
         ui_queue=ui_queue,
         root_ref=tk_root_ref,
-        on_pause=lambda is_paused: static_count_shared.__setitem__(0, 0),
+        on_pause=lambda _: static_count_shared.__setitem__(0, 0),
         pet_pos_ref=pet_pos_ref,
         thinking_ref=thinking_ref,
     )

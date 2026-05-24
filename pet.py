@@ -156,7 +156,9 @@ def run_pet_loop(on_capture, paused_ref: list, ui_queue: queue.Queue,
         except Exception as e:
             print(f'hotkey error: {e}', flush=True)
     _monitor = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(NSEventMaskKeyDown, _on_global_key)
+    _local_monitor = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(NSEventMaskKeyDown, lambda e: (_on_global_key(e), e)[1])
     _refs.append(_monitor)
+    _refs.append(_local_monitor)
 
     import signal
     signal.signal(signal.SIGINT, lambda *_: NSApplication.sharedApplication().terminate_(None))
