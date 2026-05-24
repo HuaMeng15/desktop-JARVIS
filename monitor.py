@@ -11,7 +11,8 @@ TMP_DIR = Path(__file__).parent / "tmp"
 SCREENSHOTS_DIR = TMP_DIR / "screenshots"
 RECORD_CSV = TMP_DIR / "record.csv"
 MAX_FRAMES = 300
-_CSV_FIELDS = ["current_name", "previous_name", "score", "psnr"]
+_CURSOR_REGION = 150  # half-size of cursor crop in pixels
+_CSV_FIELDS = ["current_name", "previous_name", "score", "cursor_score", "psnr", "cursor_x", "cursor_y"]
 
 
 def _psnr(a: Image.Image, b: Image.Image) -> float:
@@ -21,6 +22,13 @@ def _psnr(a: Image.Image, b: Image.Image) -> float:
     if mse == 0:
         return float("inf")
     return 20 * np.log10(255.0 / np.sqrt(mse))
+
+
+def _cursor_crop(img: Image.Image, cx: int, cy: int) -> Image.Image:
+    r = _CURSOR_REGION
+    x0, y0 = max(0, cx - r), max(0, cy - r)
+    x1, y1 = min(img.width, cx + r), min(img.height, cy + r)
+    return img.crop((x0, y0, x1, y1))
 
 
 class FrameMonitor:
@@ -48,23 +56,32 @@ class FrameMonitor:
         self._prev_img = None
         self._prev_name = None
 
-    def update(self, img: Image.Image, name: str) -> tuple[int, float]:
-        """Compare img with previous frame. Returns (dhash_distance, psnr)."""
+    def update(self, img: Image.Image, name: str, cx: int = 0, cy: int = 0) -> tuple[int, float]:
+        """Compare img with previous frame. Returns (score, psnr) where score>0 means changed.
+        score combines full-screen dHash and cursor-region dHash."""
         curr_hash = imagehash.dhash(img)
+        curr_crop = _cursor_crop(img, cx, cy)
         score = 0
         psnr_val = float("inf")
+        cursor_score = 0
 
         if self._prev_img is not None:
             score = curr_hash - imagehash.dhash(self._prev_img)
+            prev_crop = _cursor_crop(self._prev_img, cx, cy)
+            cursor_score = imagehash.dhash(curr_crop) - imagehash.dhash(prev_crop)
             psnr_val = _psnr(self._prev_img, img)
             with open(RECORD_CSV, "a", newline="") as f:
                 csv.DictWriter(f, fieldnames=_CSV_FIELDS).writerow({
                     "current_name": name,
                     "previous_name": self._prev_name,
                     "score": score,
+                    "cursor_score": cursor_score,
                     "psnr": f"{psnr_val:.2f}" if psnr_val != float("inf") else "inf",
+                    "cursor_x": cx,
+                    "cursor_y": cy,
                 })
 
         self._prev_img = img
         self._prev_name = name
-        return score, psnr_val
+        # Either full-screen or cursor-region change counts as activity
+        return max(score, cursor_score), psnr_val

@@ -27,6 +27,7 @@ def _ns_color(r, g, b, a=1.0):
 
 
 _MainCallerCls = None
+_on_main_refs: set = set()  # keep callers alive until run_ fires
 
 def _on_main(fn):
     from Foundation import NSThread
@@ -45,7 +46,9 @@ def _on_main(fn):
                         "run:", None, False)
                 def run_(self, _):
                     self._fn()
+                    _on_main_refs.discard(self)
         caller = _MainCallerCls.alloc().init()
+        _on_main_refs.add(caller)
         caller.schedule(fn)
 
 
@@ -192,7 +195,8 @@ def show_overlay(text_or_stream, on_more, on_chat, on_stream_done=None,
             _show_overlay_impl(text_or_stream, on_more, on_chat, on_stream_done,
                                pet_pos_ref, reaction, closed, close_ref, win_ref,
                                on_thinking)
-        except Exception:
+            print("[display] _build done", flush=True)
+        except BaseException:
             import traceback; traceback.print_exc()
             closed[0] = True
 
@@ -217,6 +221,7 @@ def _show_overlay_impl(text_or_stream, on_more, on_chat, on_stream_done,
                        pet_pos_ref, reaction, closed, close_ref=None, win_ref=None,
                        on_thinking=None):
     global _OvWindowCls, _OvDelegateCls, _FadeTargetCls, _FollowTargetCls, _ChatFieldDelegateCls
+    print("[display] impl: importing AppKit", flush=True)
     from AppKit import (NSWindow, NSBorderlessWindowMask,
                         NSBackingStoreBuffered, NSColor, NSView, NSTextView,
                         NSScrollView, NSTextField, NSMakeRect, NSFont,
@@ -292,7 +297,7 @@ def _show_overlay_impl(text_or_stream, on_more, on_chat, on_stream_done,
 
     WIN_H = [200]
     ax, ay = _pos(WIN_H[0])
-
+    print("[display] impl: creating window", flush=True)
     win = _OvWindowCls.alloc().initWithContentRect_styleMask_backing_defer_(
         NSMakeRect(ax, ay, WIN_W, WIN_H[0]),
         NSBorderlessWindowMask, NSBackingStoreBuffered, False)
@@ -503,8 +508,10 @@ def _show_overlay_impl(text_or_stream, on_more, on_chat, on_stream_done,
             0.05, follow_target, "follow:", None, True)
 
     # ── Stream or static ──────────────────────────────────────────────────────
+    print("[display] impl: setting text / starting stream", flush=True)
     if isinstance(text_or_stream, str):
         _set_text(text_or_stream)
+        print("[display] impl: showing window", flush=True)
         _show_win()
     else:
         def _stream_worker():

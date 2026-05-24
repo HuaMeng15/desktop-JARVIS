@@ -321,7 +321,7 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
         img = Image.open(io.BytesIO(image_bytes))
 
         frame_monitor.save_frame(image_bytes, name)
-        score, psnr = frame_monitor.update(img, name)
+        score, psnr = frame_monitor.update(img, name, cx, cy)
 
         if score == 0:
             static_count[0] += 1
@@ -361,12 +361,20 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
                 in_post_switch[0] = False
                 # Real app switch: screen fully settles (last 2 frames near-zero)
                 # Zoom/scroll: scores stay elevated (5-15) across all frames
-                settled = all(s < 5 for s in post_switch_scores[-2:])
+                settled = all(s < 10 for s in post_switch_scores[-2:])
 
                 if not settled:
-                    # Zoom/scroll or wandering — check if still switching
+                    # Check if last 2 scores are both high — rapid app switch (e.g. alt-tab)
+                    rapid_switch = all(s > SWITCH_THRESHOLD for s in post_switch_scores[-2:])
+                    if rapid_switch and pending_activity_bytes[0] is not None:
+                        _query_activity_background(pending_activity_bytes[0], activity_tracker)
+                        recent = activity_tracker.recent(hours=2)
+                        if recent:
+                            pending_overlay[0] = ("recap", recent)
+                        print(f"[activity] Rapid switch (scores={post_switch_scores}) — recap triggered")
+                    else:
+                        print(f"[activity] False switch (scores={post_switch_scores}) — ignored")
                     pending_activity_bytes[0] = None
-                    print(f"[activity] False switch (scores={post_switch_scores}) — ignored")
                 else:
                     # Fire ONE background summary of the "from" page
                     if pending_activity_bytes[0] is not None:
