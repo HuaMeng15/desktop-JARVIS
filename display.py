@@ -268,14 +268,17 @@ def _show_overlay_impl(text_or_stream, on_more, on_chat, on_stream_done,
         import objc as _objc
         class _AutoCloseTargetCls(NSObject):
             @_objc.python_method
-            def start(self, win, close_fn, timeout=10):
+            def start(self, win, close_fn, thinking_ref, timeout=10):
                 self._win = win
                 self._close = close_fn
+                self._thinking = thinking_ref
                 self._remaining = [timeout]
                 self._closed = [False]
             def tick_(self, timer):
                 if self._closed[0]:
                     timer.invalidate(); return
+                if self._thinking[0]:
+                    self._remaining[0] = 10; return  # pause countdown while thinking
                 from AppKit import NSEvent
                 mp = NSEvent.mouseLocation()
                 frame = self._win.frame()
@@ -437,6 +440,13 @@ def _show_overlay_impl(text_or_stream, on_more, on_chat, on_stream_done,
         closed[0] = True
         win.close()
 
+    _thinking = [False]
+    _orig_on_thinking = on_thinking
+    def on_thinking(val, _orig=_orig_on_thinking):
+        _thinking[0] = val
+        if _orig:
+            _orig(val)
+
     def _on_more():
         _set_text("Thinking…")
         if on_thinking:
@@ -527,7 +537,7 @@ def _show_overlay_impl(text_or_stream, on_more, on_chat, on_stream_done,
             0.015, ft, "tick:", None, True)
         # Auto-close after 10s if cursor not hovering
         ac = _AutoCloseTargetCls.alloc().init()
-        ac.start(win, lambda: _close("dismiss"))
+        ac.start(win, lambda: _close("dismiss"), _thinking)
         ac._closed = closed
         _refs.append(ac)
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
