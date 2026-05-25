@@ -170,7 +170,7 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
             try:
                 hint = get_hint(b64, cx, cy, sw, sh, 0)
                 print(f"[pet] hint: needs={hint.needs_hint} conf={hint.confidence} reason={hint.reason}")
-                pending_hint.put((hint, b64, raw, cx, cy, None, True))
+                pending_hint.put((hint, b64, raw, cx, cy, None, "pet", True))
             except Exception as e:
                 print(f"[pet] hint error: {e}")
                 state[0] = State.CAPTURING
@@ -190,13 +190,20 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
         try:
             item = pending_hint.get_nowait()
             hint, h_b64, h_bytes, h_cx, h_cy, h_selection = item[:6]
-            forced = item[6] if len(item) > 6 else False
+            trigger = "clipboard" if h_selection else "stuck"
+            forced = False
+            if len(item) > 6:
+                if isinstance(item[6], str):
+                    trigger = item[6]
+                    forced = item[7] if len(item) > 7 else False
+                else:
+                    forced = item[6]
             show = hint.needs_hint and hint.confidence != "low"
             if not show and not forced:
                 print(f"[hint] skipped: needs={hint.needs_hint} conf={hint.confidence} reason={hint.reason}")
                 state[0] = State.CAPTURING
             else:
-                log_key = log_llm_call("stuck", hint.total_ms, hint.total_ms,
+                log_key = log_llm_call(trigger, hint.total_ms, hint.total_ms,
                                        hint.input_tokens, hint.output_tokens,
                                        response_text=hint.hint, image_bytes=h_bytes,
                                        cursor_x=h_cx, cursor_y=h_cy,
@@ -349,6 +356,43 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
         if static_count[0] >= STATIC_THRESHOLD and cursor_static_count[0] < STATIC_THRESHOLD and state[0] == State.CAPTURING:
             print(f"[hint] screen idle ({static_count[0]}s) but cursor active — waiting for cursor to settle")
 
+        # --- Clipboard-based hint (new copy detected) ---
+        # Clipboard is a direct user action, so handle it before slower idle/context heuristics.
+        if state[0] == State.CAPTURING and not paused[0]:
+            current_count = get_clipboard_change_count()
+            if current_count != last_clipboard_count[0]:
+                last_clipboard_count[0] = current_count
+                clipboard_text = get_clipboard_text()
+                if clipboard_text:
+                    last_triggered_clipboard[0] = clipboard_text
+                    state[0] = State.OVERLAY
+                    triggered_b64[0] = image_b64
+                    triggered_bytes = image_bytes
+                    _cx, _cy = cx, cy
+                    _sel = clipboard_text
+                    print(f"Clipboard copy detected — querying hint for {_sel[:60]!r}...")
+
+                    def _run_selection_hint(b64=triggered_b64[0], raw=triggered_bytes, sel=_sel):
+                        try:
+                            hint = get_selection_hint(sel)
+                            print(f"[hint] needs={hint.needs_hint} conf={hint.confidence} reason={hint.reason}")
+                            pending_hint.put((hint, b64, raw, _cx, _cy, sel, "clipboard"))
+                        except Exception as e:
+                            print(f"[hint] error: {e}")
+                            state[0] = State.CAPTURING
+                        finally:
+                            _set_thinking(False)
+
+                    _set_thinking(True)
+                    threading.Thread(target=_run_selection_hint, daemon=True).start()
+
+        if state[0] == State.OVERLAY:
+            elapsed = time.monotonic() - loop_start
+            sleep_time = 1.0 - elapsed
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+            continue
+
         # --- Context-switch detection ---
         if score > SWITCH_THRESHOLD and not in_post_switch[0]:
             in_post_switch[0] = True
@@ -390,35 +434,6 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
                         print(f"[activity] Context switch confirmed and settled")
 
         prev_image_bytes[0] = image_bytes
-
-        # --- Clipboard-based hint (new copy detected) ---
-        if state[0] == State.CAPTURING and not paused[0]:
-            current_count = get_clipboard_change_count()
-            if current_count != last_clipboard_count[0]:
-                last_clipboard_count[0] = current_count
-                clipboard_text = get_clipboard_text()
-                if clipboard_text and clipboard_text != last_triggered_clipboard[0]:
-                    last_triggered_clipboard[0] = clipboard_text
-                    state[0] = State.OVERLAY
-                    triggered_b64[0] = image_b64
-                    triggered_bytes = image_bytes
-                    _cx, _cy = cx, cy
-                    _sel = clipboard_text
-                    print(f"Clipboard copy detected — querying hint for {_sel[:60]!r}...")
-
-                    def _run_selection_hint(b64=triggered_b64[0], raw=triggered_bytes, sel=_sel):
-                        try:
-                            hint = get_selection_hint(sel)
-                            print(f"[hint] needs={hint.needs_hint} conf={hint.confidence} reason={hint.reason}")
-                            pending_hint.put((hint, b64, raw, _cx, _cy, sel))
-                        except Exception as e:
-                            print(f"[hint] error: {e}")
-                            state[0] = State.CAPTURING
-                        finally:
-                            _set_thinking(False)
-
-                    _set_thinking(True)
-                    threading.Thread(target=_run_selection_hint, daemon=True).start()
 
         # --- Stuck-screen detection ---
         both_static = static_count[0] >= STATIC_THRESHOLD and cursor_static_count[0] >= STATIC_THRESHOLD
