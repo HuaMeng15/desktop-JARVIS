@@ -297,10 +297,12 @@ def _show_overlay_impl(text_or_stream, on_more, on_chat, on_stream_done,
 
     WIN_H = [200]
     ax, ay = _pos(WIN_H[0])
-    print(f"[display] impl: creating window OvWindowCls={_OvWindowCls}", flush=True)
-    win = _OvWindowCls.alloc().initWithContentRect_styleMask_backing_defer_(
+    print(f"[display] impl: alloc window", flush=True)
+    _win_alloc = _OvWindowCls.alloc()
+    print(f"[display] impl: init window", flush=True)
+    win = _win_alloc.initWithContentRect_styleMask_backing_defer_(
         NSMakeRect(ax, ay, WIN_W, WIN_H[0]),
-        NSBorderlessWindowMask, NSBackingStoreBuffered, True)
+        NSBorderlessWindowMask, NSBackingStoreBuffered, False)
     print(f"[display] impl: window created win={win}", flush=True)
     if win_ref is not None:
         win_ref[0] = win

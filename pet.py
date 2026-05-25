@@ -4,7 +4,7 @@ import queue
 import threading
 from pathlib import Path
 
-PET_SIZE = 100
+PET_SIZE = 50
 _ICON_DIR = Path(__file__).parent / "src" / "icons"
 
 
