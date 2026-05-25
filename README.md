@@ -101,6 +101,15 @@ JARVIS runs in the background and proactively surfaces help as you work.
 | **Chat** | Type a follow-up question |
 | **Dismiss** | Close and resume monitoring |
 
+### Conversation Context
+
+When you copy a term and get an explanation, JARVIS maintains conversation history for follow-ups:
+
+- **Turn 1** — JARVIS sends your screenshot + the copied text to Claude and displays the response.
+- **More / Chat** — subsequent turns send only the conversation history (no image re-sent), so the model stays focused on the copied term rather than re-analyzing the screen.
+
+This means you can ask "give me an example" or "explain it differently" and get a contextually aware reply, not a generic screen description. Each chat turn appends to the history, so the full thread is preserved for the duration of the overlay.
+
 ---
 
 ## Privacy

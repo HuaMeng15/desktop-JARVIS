@@ -24,10 +24,7 @@ STATIC_THRESHOLD = 5       # seconds of dHash==0 before stuck-screen trigger
 SWITCH_THRESHOLD = 20      # dHash score above this = context switch
 CURSOR_TOLERANCE = 5      # pixels — cursor movement within this radius counts as static
 
-MORE_PROMPT = (
-    "Give more detailed advice about what I should do on this screen. "
-    "Expand on your previous suggestions with concrete next steps."
-)
+MORE_PROMPT = "Tell me more. Expand on your previous explanation with more depth, examples, or context."
 
 ACTIVITY_PROMPT = (
     'Look at this screenshot. Reply with a JSON object only, no other text:\n'
@@ -209,29 +206,39 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
                                        cursor_x=h_cx, cursor_y=h_cy,
                                        selected_text=h_selection)
 
-                def on_more(b64=h_b64):
-                    try:
-                        text, in_tok, out_tok, ttft, total = get_response(b64, prompt=MORE_PROMPT)
-                        log_llm_call("more", ttft, total, in_tok, out_tok, response_text=text)
-                    except Exception as e:
-                        text = f"Error: {e}"
-                    return text
-
-                def on_chat(msg: str, b64=h_b64):
-                    try:
-                        text, in_tok, out_tok, ttft, total = get_response(b64, prompt=msg)
-                        log_llm_call("chat", ttft, total, in_tok, out_tok,
-                                     response_text=text, selected_text=msg)
-                    except Exception as e:
-                        text = f"Error: {e}"
-                    return text
-
                 if not hint.needs_hint:
                     overlay_text = f"*(nothing specific to suggest)* {hint.reason}"
                 elif hint.confidence == "medium":
                     overlay_text = f"*({hint.category})* {hint.hint}"
                 else:
                     overlay_text = hint.hint
+
+                _chat_history = [
+                    {"role": "user", "content": [
+                        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": h_b64}},
+                        {"type": "text", "text": f'User copied: "{h_selection}"' if h_selection else "What is on this screen?"},
+                    ]},
+                    {"role": "assistant", "content": overlay_text},
+                ]
+
+                def on_more(history=_chat_history):
+                    try:
+                        text, in_tok, out_tok, ttft, total = get_response(None, prompt=MORE_PROMPT, history=history)
+                        log_llm_call("more", ttft, total, in_tok, out_tok, response_text=text)
+                    except Exception as e:
+                        text = f"Error: {e}"
+                    return text
+
+                def on_chat(msg: str):
+                    _chat_history.append({"role": "user", "content": msg})
+                    try:
+                        text, in_tok, out_tok, ttft, total = get_response(None, prompt=msg, history=_chat_history[:-1])
+                        log_llm_call("chat", ttft, total, in_tok, out_tok,
+                                     response_text=text, selected_text=msg)
+                        _chat_history.append({"role": "assistant", "content": text})
+                    except Exception as e:
+                        text = f"Error: {e}"
+                    return text
 
                 reaction = _show_overlay_main(overlay_text, on_more=on_more, on_chat=on_chat)
                 update_llm_reaction(log_key, reaction)
@@ -257,26 +264,30 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
                 overlay_text = _format_recap(data)
                 snap_b64 = None
 
-            def _make_more(b64=snap_b64):
+            def _make_more(b64=snap_b64, initial=overlay_text):
                 def on_more():
                     if not b64:
                         return "No screenshot available for follow-up."
+                    history = [{"role": "assistant", "content": initial}]
                     try:
-                        text, in_tok, out_tok, ttft, total = get_response(b64, prompt=MORE_PROMPT)
+                        text, in_tok, out_tok, ttft, total = get_response(b64, prompt=MORE_PROMPT, history=history)
                         log_llm_call("more", ttft, total, in_tok, out_tok, response_text=text)
                     except Exception as e:
                         text = f"Error: {e}"
                     return text
                 return on_more
 
-            def _make_chat(b64=snap_b64):
+            def _make_chat(b64=snap_b64, initial=overlay_text):
+                _chat_history = [{"role": "assistant", "content": initial}]
                 def on_chat(msg: str):
                     if not b64:
                         return "No screenshot available for follow-up."
+                    _chat_history.append({"role": "user", "content": msg})
                     try:
-                        text, in_tok, out_tok, ttft, total = get_response(b64, prompt=msg)
+                        text, in_tok, out_tok, ttft, total = get_response(b64, prompt=msg, history=_chat_history[:-1])
                         log_llm_call("chat", ttft, total, in_tok, out_tok,
                                      response_text=text, selected_text=msg)
+                        _chat_history.append({"role": "assistant", "content": text})
                     except Exception as e:
                         text = f"Error: {e}"
                     return text
@@ -374,7 +385,7 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
 
                     def _run_selection_hint(b64=triggered_b64[0], raw=triggered_bytes, sel=_sel):
                         try:
-                            hint = get_selection_hint(sel)
+                            hint = get_selection_hint(sel, image_b64=b64)
                             print(f"[hint] needs={hint.needs_hint} conf={hint.confidence} reason={hint.reason}")
                             pending_hint.put((hint, b64, raw, _cx, _cy, sel, "clipboard"))
                         except Exception as e:

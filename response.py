@@ -77,10 +77,14 @@ Return JSON only — no prose, no markdown fences. Fields:
 """
 
 
-def get_selection_hint(selected_text: str) -> HintResult:
+def get_selection_hint(selected_text: str, image_b64: str | None = None) -> HintResult:
     """Explain selected text — concept, sentence, or code."""
     user_text = f'Selected text:\n"""\n{selected_text}\n"""'
-    messages = [{"role": "user", "content": [{"type": "text", "text": user_text}]}]
+    content = []
+    if image_b64:
+        content.append({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": image_b64}})
+    content.append({"type": "text", "text": user_text})
+    messages = [{"role": "user", "content": content}]
     start = time.monotonic()
     msg = _client.messages.create(**_MESSAGES_KWARGS, system=_SELECTION_SYSTEM, messages=messages)
     total_ms = (time.monotonic() - start) * 1000
@@ -136,20 +140,25 @@ def get_hint(image_b64: str, cx: int, cy: int, screen_w: int, screen_h: int, idl
     )
 
 
-def _build_messages(image_b64: str, prompt: str) -> list:
-    return [{"role": "user", "content": [
-        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": image_b64}},
-        {"type": "text", "text": prompt},
-    ]}]
+def _build_messages(image_b64: str | None, prompt: str, history: list | None = None) -> list:
+    if not history:
+        # First turn: include image
+        return [{"role": "user", "content": [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": image_b64}},
+            {"type": "text", "text": prompt},
+        ]}]
+    # Follow-up: history already contains the full prior conversation; just append new user message
+    return history + [{"role": "user", "content": prompt}]
 
 
-def get_response(image_b64: str, prompt: str = "What do you see on this screen? Be concise.") -> tuple[str, int, int, float, float]:
+def get_response(image_b64: str | None, prompt: str = "What do you see on this screen? Be concise.",
+                 history: list | None = None) -> tuple[str, int, int, float, float]:
     """Returns (response_text, input_tokens, output_tokens, ttft_ms, total_ms)."""
     ttft_ms = None
     start = time.monotonic()
     chunks = []
 
-    with _client.messages.stream(**_MESSAGES_KWARGS, messages=_build_messages(image_b64, prompt)) as stream:
+    with _client.messages.stream(**_MESSAGES_KWARGS, messages=_build_messages(image_b64, prompt, history)) as stream:
         for text in stream.text_stream:
             if ttft_ms is None:
                 ttft_ms = (time.monotonic() - start) * 1000
@@ -160,12 +169,12 @@ def get_response(image_b64: str, prompt: str = "What do you see on this screen? 
     return "".join(chunks), msg.usage.input_tokens, msg.usage.output_tokens, ttft_ms or total_ms, total_ms
 
 
-def stream_response(image_b64: str, prompt: str) -> Generator[str | tuple, None, None]:
+def stream_response(image_b64: str, prompt: str, history: list | None = None) -> Generator[str | tuple, None, None]:
     """Yield text chunks, then finally yield (input_tokens, output_tokens, ttft_ms, total_ms)."""
     ttft_ms = None
     start = time.monotonic()
 
-    with _client.messages.stream(**_MESSAGES_KWARGS, messages=_build_messages(image_b64, prompt)) as stream:
+    with _client.messages.stream(**_MESSAGES_KWARGS, messages=_build_messages(image_b64, prompt, history)) as stream:
         for text in stream.text_stream:
             if ttft_ms is None:
                 ttft_ms = (time.monotonic() - start) * 1000
