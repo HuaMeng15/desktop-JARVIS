@@ -121,6 +121,7 @@ _OvDelegateCls = None
 _FadeTargetCls = None
 _FollowTargetCls = None
 _ChatFieldDelegateCls = None
+_AutoCloseTargetCls = None
 
 def _button(parent_view, title, rect, bg_r, bg_g, bg_b, action_fn, refs):
     global _BtnViewCls
@@ -262,8 +263,33 @@ def _show_overlay_impl(text_or_stream, on_more, on_chat, on_stream_done,
                     timer.invalidate(); return
                 self._resize()
 
-    if _ChatFieldDelegateCls is None:
+    global _AutoCloseTargetCls
+    if _AutoCloseTargetCls is None:
         import objc as _objc
+        class _AutoCloseTargetCls(NSObject):
+            @_objc.python_method
+            def start(self, win, close_fn, timeout=10):
+                self._win = win
+                self._close = close_fn
+                self._remaining = [timeout]
+                self._closed = [False]
+            def tick_(self, timer):
+                if self._closed[0]:
+                    timer.invalidate(); return
+                from AppKit import NSEvent
+                mp = NSEvent.mouseLocation()
+                frame = self._win.frame()
+                hovered = (frame.origin.x <= mp.x <= frame.origin.x + frame.size.width and
+                           frame.origin.y <= mp.y <= frame.origin.y + frame.size.height)
+                if hovered:
+                    self._remaining[0] = 10
+                else:
+                    self._remaining[0] -= 1
+                    if self._remaining[0] <= 0:
+                        timer.invalidate()
+                        self._close()
+
+    if _ChatFieldDelegateCls is None:
         class _ChatFieldDelegateCls(NSObject):
             def control_textView_doCommandBySelector_(self, control, tv, sel):
                 if sel == b"insertNewline:":
@@ -499,6 +525,13 @@ def _show_overlay_impl(text_or_stream, on_more, on_chat, on_stream_done,
         _refs.append(ft)
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             0.015, ft, "tick:", None, True)
+        # Auto-close after 10s if cursor not hovering
+        ac = _AutoCloseTargetCls.alloc().init()
+        ac.start(win, lambda: _close("dismiss"))
+        ac._closed = closed
+        _refs.append(ac)
+        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            1.0, ac, "tick:", None, True)
 
     # ── Pet follow ────────────────────────────────────────────────────────────
     if pet_pos_ref is not None:

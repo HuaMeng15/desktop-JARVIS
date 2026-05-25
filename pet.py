@@ -28,7 +28,7 @@ def run_pet_loop(on_capture, paused_ref: list, ui_queue: queue.Queue,
     sh = int(NSScreen.mainScreen().frame().size.height)
     dock_h = int(NSScreen.mainScreen().visibleFrame().origin.y)
     ax = sw - PET_SIZE - 30
-    ay = dock_h + 30
+    ay = dock_h - 60
 
     _drag = {}
     _refs = []  # keep objects alive
