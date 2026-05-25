@@ -11,7 +11,7 @@ TMP_DIR = Path(__file__).parent / "tmp"
 SCREENSHOTS_DIR = TMP_DIR / "screenshots"
 RECORD_CSV = TMP_DIR / "record.csv"
 MAX_FRAMES = 300
-_CURSOR_REGION = 150  # half-size of cursor crop in pixels
+_CURSOR_REGION = 300  # half-size of cursor crop in pixels
 _CSV_FIELDS = ["current_name", "previous_name", "score", "cursor_score", "psnr", "cursor_x", "cursor_y"]
 
 
@@ -83,5 +83,5 @@ class FrameMonitor:
 
         self._prev_img = img
         self._prev_name = name
-        # Either full-screen or cursor-region change counts as activity
-        return max(score, cursor_score), psnr_val
+        # If full-screen is 0, consider cursor_score
+        return (cursor_score if score == 0 else score), psnr_val

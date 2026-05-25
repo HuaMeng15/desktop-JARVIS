@@ -22,7 +22,7 @@ from stats import log_activity_call, log_llm_call, update_llm_reaction
 MONITOR_INDEX = 1
 STATIC_THRESHOLD = 5       # seconds of dHash==0 before stuck-screen trigger
 SWITCH_THRESHOLD = 20      # dHash score above this = context switch
-CURSOR_TOLERANCE = 20      # pixels — cursor movement within this radius counts as static
+CURSOR_TOLERANCE = 5      # pixels — cursor movement within this radius counts as static
 
 MORE_PROMPT = (
     "Give more detailed advice about what I should do on this screen. "
@@ -230,6 +230,7 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
                 update_llm_reaction(log_key, reaction)
                 frame_monitor.reset()
                 cursor_static_count[0] = 0
+                pending_overlay[0] = None  # discard stale activity overlay superseded by hint
                 # Sync clipboard state to current so copies made during overlay don't re-trigger
                 last_clipboard_count[0] = get_clipboard_change_count()
                 last_triggered_clipboard[0] = get_clipboard_text()
