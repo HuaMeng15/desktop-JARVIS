@@ -268,17 +268,18 @@ def _show_overlay_impl(text_or_stream, on_more, on_chat, on_stream_done,
         import objc as _objc
         class _AutoCloseTargetCls(NSObject):
             @_objc.python_method
-            def start(self, win, close_fn, thinking_ref, timeout=10):
+            def start(self, win, close_fn, thinking_ref, chat_active_ref, timeout=10):
                 self._win = win
                 self._close = close_fn
                 self._thinking = thinking_ref
+                self._chat_active = chat_active_ref
                 self._remaining = [timeout]
                 self._closed = [False]
             def tick_(self, timer):
                 if self._closed[0]:
                     timer.invalidate(); return
-                if self._thinking[0]:
-                    self._remaining[0] = 10; return  # pause countdown while thinking
+                if self._thinking[0] or self._chat_active[0]:
+                    self._remaining[0] = 10; return  # pause while thinking or chat is open
                 from AppKit import NSEvent
                 mp = NSEvent.mouseLocation()
                 frame = self._win.frame()
@@ -340,12 +341,13 @@ def _show_overlay_impl(text_or_stream, on_more, on_chat, on_stream_done,
     win.setAlphaValue_(0.0)
     win.setLevel_(4)  # above floating
 
+    print("[display] impl: contentView", flush=True)
     cv = win.contentView()
     cv.setWantsLayer_(True)
     cv.layer().setCornerRadius_(RADIUS)
     cv.layer().setMasksToBounds_(True)
     cv.layer().setBackgroundColor_(_cg_color(BG_R, BG_G, BG_B, ALPHA))
-
+    print("[display] impl: header", flush=True)
     # ── Header ────────────────────────────────────────────────────────────────
     header = NSView.alloc().initWithFrame_(NSMakeRect(0, WIN_H[0] - HEADER_H, WIN_W, HEADER_H))
     header.setWantsLayer_(True)
@@ -361,6 +363,7 @@ def _show_overlay_impl(text_or_stream, on_more, on_chat, on_stream_done,
     title_field.setFont_(NSFont.fontWithName_size_("SF Pro Display Bold", 9) or NSFont.boldSystemFontOfSize_(9))
     header.addSubview_(title_field)
 
+    print("[display] impl: scroll+text", flush=True)
     # ── Scroll + text ─────────────────────────────────────────────────────────
     scroll = NSScrollView.alloc().initWithFrame_(
         NSMakeRect(0, BOTTOM_H, WIN_W, WIN_H[0] - HEADER_H - BOTTOM_H))
@@ -482,6 +485,7 @@ def _show_overlay_impl(text_or_stream, on_more, on_chat, on_stream_done,
         msg = chat_field.stringValue().strip()
         if not msg:
             return
+        _chat_active[0] = False
         chat_field.setStringValue_("")
         chat_field.setHidden_(True)
         win._on_enter = None
@@ -503,13 +507,17 @@ def _show_overlay_impl(text_or_stream, on_more, on_chat, on_stream_done,
     chat_field.setDelegate_(chat_delegate)
     chat_delegate._setup_field(chat_field)
 
+    _chat_active = [False]
+
     def _on_chat_click():
+        _chat_active[0] = True
         chat_field.setHidden_(False)
         win._on_enter = _on_chat_send
         win.makeKeyWindow()
         _resize()
         win.makeFirstResponder_(chat_field)
 
+    print("[display] impl: building buttons", flush=True)
     _btns['good']    = _button(cv, "✓ Good",   NSMakeRect(12, 10, 80, BTN_H), GOOD_R, GOOD_G, GOOD_B, lambda: _close("good"), _refs)
     _btns['more']    = _button(cv, "More",      NSMakeRect(0, 10, 60, BTN_H),  BTN_R, BTN_G, BTN_B, _on_more, _refs)
     _btns['chat']    = _button(cv, "Chat",      NSMakeRect(0, 10, 60, BTN_H),  BTN_R, BTN_G, BTN_B, _on_chat_click, _refs)
@@ -518,6 +526,7 @@ def _show_overlay_impl(text_or_stream, on_more, on_chat, on_stream_done,
     _btns['send'].setHidden_(True)
     _layout_buttons(WIN_H[0])
 
+    print("[display] impl: delegate+timers", flush=True)
     ov_delegate = _OvDelegateCls.alloc().init()
     ov_delegate._closed = closed
     _refs.append(ov_delegate)
@@ -537,7 +546,7 @@ def _show_overlay_impl(text_or_stream, on_more, on_chat, on_stream_done,
             0.015, ft, "tick:", None, True)
         # Auto-close after 10s if cursor not hovering
         ac = _AutoCloseTargetCls.alloc().init()
-        ac.start(win, lambda: _close("dismiss"), _thinking)
+        ac.start(win, lambda: _close("dismiss"), _thinking, _chat_active)
         ac._closed = closed
         _refs.append(ac)
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
