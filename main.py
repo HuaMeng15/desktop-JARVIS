@@ -40,7 +40,7 @@ class State(Enum):
     DISPLAY_SLEEP = auto()
 
 
-def _start_lock_listener(state_ref: list):
+def _start_lock_listener(state_ref: list, just_unlocked_ref: list, lock_time_ref: list):
     try:
         from Foundation import NSDistributedNotificationCenter, NSRunLoop, NSDate
         center = NSDistributedNotificationCenter.defaultCenter()
@@ -48,11 +48,13 @@ def _start_lock_listener(state_ref: list):
         def on_lock(_):
             print("Screen locked — pausing capture.")
             state_ref[0] = State.LOCKED
+            lock_time_ref[0] = datetime.now()
 
         def on_unlock(_):
             print("Screen unlocked — resuming capture.")
             if state_ref[0] == State.LOCKED:
                 state_ref[0] = State.CAPTURING
+                just_unlocked_ref[0] = True
 
         center.addObserverForName_object_queue_usingBlock_(
             "com.apple.screenIsLocked", None, None, on_lock)
@@ -130,8 +132,10 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
     post_switch_scores = []
     pending_activity_bytes = [None]
     pending_overlay = [None]  # ("previous_work", record) | ("recap", records)
+    just_unlocked = [False]
+    lock_time = [None]  # datetime when screen was locked
 
-    lock_thread = threading.Thread(target=_start_lock_listener, args=(state,), daemon=True)
+    lock_thread = threading.Thread(target=_start_lock_listener, args=(state, just_unlocked, lock_time), daemon=True)
     lock_thread.start()
 
     def _show_overlay_main(text, on_more, on_chat, on_stream_done=None):
@@ -260,6 +264,9 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
             if kind == "previous_work":
                 overlay_text = _format_previous_work(data)
                 snap_b64 = triggered_b64[0]
+            elif kind == "welcome_back":
+                overlay_text = data
+                snap_b64 = None
             else:
                 overlay_text = _format_recap(data)
                 snap_b64 = None
@@ -306,6 +313,22 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
         if state[0] == State.LOCKED:
             time.sleep(1)
             continue
+
+        if just_unlocked[0] and state[0] == State.CAPTURING:
+            just_unlocked[0] = False
+            locked_duration = (datetime.now() - lock_time[0]).total_seconds() if lock_time[0] else 0
+            if locked_duration < 2 * 3600:
+                print(f"[activity] Unlock after {locked_duration/60:.0f}min — skip recap (< 2h)")
+            else:
+                recent = activity_tracker.recent(hours=24)
+                if recent:
+                    top = recent[0]
+                    welcome = f"**Welcome back!** Your previous focus: **{top.app}** — {top.summary}"
+                    if len(recent) > 1:
+                        others = ", ".join(r.app for r in recent[1:3] if r.app != top.app)
+                        if others:
+                            welcome += f"\n\nAlso active: {others}"
+                    pending_overlay[0] = ("welcome_back", welcome)
 
         if paused[0]:
             time.sleep(1)
@@ -439,8 +462,12 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
                     # Check if current page matches a known task
                     match = activity_tracker.match(img)
                     if match:
-                        print(f"[activity] Matched previous task: {match.app}")
-                        pending_overlay[0] = ("previous_work", match)
+                        since_seen = (datetime.now() - datetime.fromisoformat(match.last_seen)).total_seconds()
+                        if since_seen >= 5 * 60:
+                            print(f"[activity] Matched previous task: {match.app} (last seen {since_seen/60:.0f}min ago)")
+                            pending_overlay[0] = ("previous_work", match)
+                        else:
+                            print(f"[activity] Matched {match.app} but seen {since_seen:.0f}s ago — skip recap")
                     else:
                         print(f"[activity] Context switch confirmed and settled")
 
