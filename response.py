@@ -1,12 +1,14 @@
 import json
+import os
 import time
-import anthropic
+from openai import OpenAI
 from collections.abc import Generator
 from dataclasses import dataclass
 
-_client = anthropic.Anthropic()
+_client: OpenAI | None = None
 
-_MESSAGES_KWARGS = dict(model="claude-opus-4-6", max_tokens=1024)
+_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
+_RESPONSES_KWARGS = dict(model=_MODEL, max_output_tokens=1024)
 
 _HINT_SYSTEM = """You are JARVIS, a sharp productivity assistant watching a user's screen.
 
@@ -82,13 +84,13 @@ def get_selection_hint(selected_text: str, image_b64: str | None = None) -> Hint
     user_text = f'Selected text:\n"""\n{selected_text}\n"""'
     content = []
     if image_b64:
-        content.append({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": image_b64}})
-    content.append({"type": "text", "text": user_text})
+        content.append(_input_image(image_b64))
+    content.append({"type": "input_text", "text": user_text})
     messages = [{"role": "user", "content": content}]
     start = time.monotonic()
-    msg = _client.messages.create(**_MESSAGES_KWARGS, system=_SELECTION_SYSTEM, messages=messages)
+    msg = _create_response(messages, instructions=_SELECTION_SYSTEM)
     total_ms = (time.monotonic() - start) * 1000
-    text = msg.content[0].text.strip()
+    text = _extract_text(msg).strip()
     if text.startswith("```"):
         text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
     try:
@@ -101,8 +103,8 @@ def get_selection_hint(selected_text: str, image_b64: str | None = None) -> Hint
         confidence="high",
         reason=str(data.get("reason", "selection")),
         category=str(data.get("category", "other")),
-        input_tokens=msg.usage.input_tokens,
-        output_tokens=msg.usage.output_tokens,
+        input_tokens=_input_tokens(msg),
+        output_tokens=_output_tokens(msg),
         total_ms=total_ms,
     )
 
@@ -115,13 +117,13 @@ def get_hint(image_b64: str, cx: int, cy: int, screen_w: int, screen_h: int, idl
         "What are they likely stuck on near the cursor? Give one specific, actionable hint."
     )
     messages = [{"role": "user", "content": [
-        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": image_b64}},
-        {"type": "text", "text": user_text},
+        _input_image(image_b64),
+        {"type": "input_text", "text": user_text},
     ]}]
     start = time.monotonic()
-    msg = _client.messages.create(**_MESSAGES_KWARGS, system=_HINT_SYSTEM, messages=messages)
+    msg = _create_response(messages, instructions=_HINT_SYSTEM)
     total_ms = (time.monotonic() - start) * 1000
-    text = msg.content[0].text.strip()
+    text = _extract_text(msg).strip()
     if text.startswith("```"):
         text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
     try:
@@ -134,21 +136,117 @@ def get_hint(image_b64: str, cx: int, cy: int, screen_w: int, screen_h: int, idl
         confidence=str(data.get("confidence", "low")),
         reason=str(data.get("reason", "")),
         category=str(data.get("category", "other")),
-        input_tokens=msg.usage.input_tokens,
-        output_tokens=msg.usage.output_tokens,
+        input_tokens=_input_tokens(msg),
+        output_tokens=_output_tokens(msg),
         total_ms=total_ms,
     )
 
 
-def _build_messages(image_b64: str | None, prompt: str, history: list | None = None) -> list:
+def _input_image(image_b64: str) -> dict:
+    return {
+        "type": "input_image",
+        "image_url": f"data:image/png;base64,{image_b64}",
+        "detail": "auto",
+    }
+
+
+def _normalize_content(content):
+    """Accept current OpenAI blocks and legacy Anthropic-style history blocks."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content)
+
+    normalized = []
+    for block in content:
+        if not isinstance(block, dict):
+            normalized.append({"type": "input_text", "text": str(block)})
+            continue
+
+        block_type = block.get("type")
+        if block_type in {"input_text", "input_image"}:
+            normalized.append(block)
+        elif block_type == "text":
+            normalized.append({"type": "input_text", "text": block.get("text", "")})
+        elif block_type == "image":
+            source = block.get("source", {})
+            data = source.get("data", "")
+            media_type = source.get("media_type", "image/png")
+            normalized.append({
+                "type": "input_image",
+                "image_url": f"data:{media_type};base64,{data}",
+                "detail": "auto",
+            })
+        else:
+            normalized.append(block)
+    return normalized
+
+
+def _normalize_input(messages: list) -> list:
+    return [
+        {
+            "role": message.get("role", "user"),
+            "content": _normalize_content(message.get("content", "")),
+        }
+        for message in messages
+    ]
+
+
+def _build_input(image_b64: str | None, prompt: str, history: list | None = None) -> list:
     if not history:
         # First turn: include image
-        return [{"role": "user", "content": [
-            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": image_b64}},
-            {"type": "text", "text": prompt},
-        ]}]
+        content = []
+        if image_b64:
+            content.append(_input_image(image_b64))
+        content.append({"type": "input_text", "text": prompt})
+        return [{"role": "user", "content": content}]
     # Follow-up: history already contains the full prior conversation; just append new user message
-    return history + [{"role": "user", "content": prompt}]
+    return _normalize_input(history + [{"role": "user", "content": prompt}])
+
+
+def _create_response(input_items: list, instructions: str | None = None, stream: bool = False):
+    kwargs = {**_RESPONSES_KWARGS, "input": _normalize_input(input_items)}
+    if instructions:
+        kwargs["instructions"] = instructions
+    if stream:
+        kwargs["stream"] = True
+    return _get_client().responses.create(**kwargs)
+
+
+def _get_client() -> OpenAI:
+    global _client
+    if _client is None:
+        _client = OpenAI()
+    return _client
+
+
+def _extract_text(msg) -> str:
+    text = getattr(msg, "output_text", None)
+    if isinstance(text, str):
+        return text
+
+    # Test/backward-compatibility fallback for message-like objects.
+    content = getattr(msg, "content", None)
+    if content:
+        return "".join(str(getattr(part, "text", "")) for part in content)
+
+    parts = []
+    for item in getattr(msg, "output", []) or []:
+        for part in getattr(item, "content", []) or []:
+            text = getattr(part, "text", None)
+            if text:
+                parts.append(text)
+    return "".join(parts)
+
+
+def _input_tokens(msg) -> int:
+    usage = getattr(msg, "usage", None)
+    return int(getattr(usage, "input_tokens", 0) or 0)
+
+
+def _output_tokens(msg) -> int:
+    usage = getattr(msg, "usage", None)
+    return int(getattr(usage, "output_tokens", 0) or 0)
 
 
 def get_response(image_b64: str | None, prompt: str = "What do you see on this screen? Be concise.",
@@ -157,29 +255,44 @@ def get_response(image_b64: str | None, prompt: str = "What do you see on this s
     ttft_ms = None
     start = time.monotonic()
     chunks = []
+    final_msg = None
 
-    with _client.messages.stream(**_MESSAGES_KWARGS, messages=_build_messages(image_b64, prompt, history)) as stream:
-        for text in stream.text_stream:
+    stream = _create_response(_build_input(image_b64, prompt, history), stream=True)
+    for event in stream:
+        event_type = getattr(event, "type", "")
+        if event_type == "response.output_text.delta":
+            text = getattr(event, "delta", "")
             if ttft_ms is None:
                 ttft_ms = (time.monotonic() - start) * 1000
             chunks.append(text)
-        msg = stream.get_final_message()
+        elif event_type == "response.completed":
+            final_msg = getattr(event, "response", None)
+        elif event_type == "error":
+            raise RuntimeError(str(getattr(event, "message", event)))
 
     total_ms = (time.monotonic() - start) * 1000
-    return "".join(chunks), msg.usage.input_tokens, msg.usage.output_tokens, ttft_ms or total_ms, total_ms
+    text = "".join(chunks) or (_extract_text(final_msg) if final_msg else "")
+    return text, _input_tokens(final_msg), _output_tokens(final_msg), ttft_ms or total_ms, total_ms
 
 
 def stream_response(image_b64: str, prompt: str, history: list | None = None) -> Generator[str | tuple, None, None]:
     """Yield text chunks, then finally yield (input_tokens, output_tokens, ttft_ms, total_ms)."""
     ttft_ms = None
     start = time.monotonic()
+    final_msg = None
 
-    with _client.messages.stream(**_MESSAGES_KWARGS, messages=_build_messages(image_b64, prompt, history)) as stream:
-        for text in stream.text_stream:
+    stream = _create_response(_build_input(image_b64, prompt, history), stream=True)
+    for event in stream:
+        event_type = getattr(event, "type", "")
+        if event_type == "response.output_text.delta":
+            text = getattr(event, "delta", "")
             if ttft_ms is None:
                 ttft_ms = (time.monotonic() - start) * 1000
             yield text
-        msg = stream.get_final_message()
+        elif event_type == "response.completed":
+            final_msg = getattr(event, "response", None)
+        elif event_type == "error":
+            raise RuntimeError(str(getattr(event, "message", event)))
 
     total_ms = (time.monotonic() - start) * 1000
-    yield (msg.usage.input_tokens, msg.usage.output_tokens, ttft_ms or total_ms, total_ms)
+    yield (_input_tokens(final_msg), _output_tokens(final_msg), ttft_ms or total_ms, total_ms)

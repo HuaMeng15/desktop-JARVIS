@@ -18,6 +18,7 @@ from monitor import FrameMonitor
 from pet import run_pet_loop
 from response import get_hint, get_response, get_selection_hint
 from stats import log_activity_call, log_llm_call, update_llm_reaction
+from word_signature import WordSignatureError, paste_signature_into_active_word
 
 MONITOR_INDEX = 1
 STATIC_THRESHOLD = 5       # seconds of dHash==0 before stuck-screen trigger
@@ -108,7 +109,8 @@ def _format_recap(records) -> str:
 
 def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
          tk_root_ref: list | None = None, static_count: list | None = None,
-         pet_pos_ref: list | None = None, thinking_ref: list | None = None):
+         pet_pos_ref: list | None = None, thinking_ref: list | None = None,
+         on_signature_ref: list | None = None):
     state = [State.CAPTURING]
     # paused is passed in (shared with pet)
     frame_monitor = FrameMonitor()
@@ -132,6 +134,8 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
     post_switch_scores = []
     pending_activity_bytes = [None]
     pending_overlay = [None]  # ("previous_work", record) | ("recap", records)
+    if on_signature_ref is None:
+        on_signature_ref = [lambda: None]
     just_unlocked = [False]
     lock_time = [None]  # datetime when screen was locked
 
@@ -181,6 +185,47 @@ def main(ui_queue: queue.Queue, paused: list, on_capture_ref: list,
         threading.Thread(target=_run, daemon=True).start()
 
     on_capture_ref[0] = _on_pet_capture
+
+    def _show_status_overlay(text: str):
+        def _noop_more():
+            return text
+
+        def _noop_chat(_msg: str):
+            return text
+
+        return _show_overlay_main(text, on_more=_noop_more, on_chat=_noop_chat)
+
+    def _on_signature():
+        if paused[0]:
+            return
+        print("[word] signature insert triggered")
+        state[0] = State.OVERLAY
+        _set_thinking(True)
+
+        def _run():
+            overlay_text = None
+            try:
+                result = paste_signature_into_active_word()
+                print(f"[word] {result.message}")
+                overlay_text = f"**Word signature**\n\n{result.message}"
+            except WordSignatureError as e:
+                print(f"[word] signature error: {e}")
+                overlay_text = f"**Word signature failed**\n\n{e}"
+            except Exception as e:
+                print(f"[word] unexpected signature error: {e}")
+                overlay_text = f"**Word signature failed**\n\n{e}"
+            finally:
+                _set_thinking(False)
+            if overlay_text:
+                _show_status_overlay(overlay_text)
+            frame_monitor.reset()
+            last_clipboard_count[0] = get_clipboard_change_count()
+            last_triggered_clipboard[0] = get_clipboard_text()
+            state[0] = State.CAPTURING
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    on_signature_ref[0] = _on_signature
 
     print("JARVIS daemon started. Press Ctrl+C to stop.")
 
@@ -514,13 +559,19 @@ if __name__ == "__main__":
     static_count_shared = [0]
     pet_pos_ref = [0, 0, 0, 0]
     thinking_ref = [False]
+    on_signature_ref = [lambda: None]
 
     t = threading.Thread(
-        target=main, args=(ui_queue, paused_shared, on_capture_ref, tk_root_ref, static_count_shared, pet_pos_ref, thinking_ref), daemon=True)
+        target=main,
+        args=(ui_queue, paused_shared, on_capture_ref,
+              tk_root_ref, static_count_shared, pet_pos_ref, thinking_ref,
+              on_signature_ref),
+        daemon=True)
     t.start()
 
     run_pet_loop(
         on_capture=lambda: on_capture_ref[0](),
+        on_signature=lambda: on_signature_ref[0](),
         paused_ref=paused_shared,
         ui_queue=ui_queue,
         root_ref=tk_root_ref,

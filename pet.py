@@ -11,7 +11,8 @@ _ICON_DIR = Path(__file__).parent / "src" / "icons"
 def run_pet_loop(on_capture, paused_ref: list, ui_queue: queue.Queue,
                 root_ref: list | None = None, on_pause=None,
                 pet_pos_ref: list | None = None,
-                thinking_ref: list | None = None) -> None:
+                thinking_ref: list | None = None,
+                on_signature=None) -> None:
     from AppKit import (NSApplication, NSApplicationActivationPolicyAccessory,
                         NSBorderlessWindowMask, NSColor, NSImage,
                         NSMakeRect, NSWindow, NSBackingStoreBuffered, NSScreen,
@@ -39,6 +40,9 @@ def run_pet_loop(on_capture, paused_ref: list, ui_queue: queue.Queue,
             win.contentView().setNeedsDisplay_(True)
             if on_pause:
                 on_pause(paused_ref[0])
+        def insertSignature_(self, s):
+            if on_signature and not paused_ref[0]:
+                threading.Timer(0.1, on_signature).start()
         def quit_(self, s):
             NSApplication.sharedApplication().terminate_(None)
 
@@ -76,9 +80,13 @@ def run_pet_loop(on_capture, paused_ref: list, ui_queue: queue.Queue,
                     lbl = "Resume" if paused_ref[0] else "Pause"
                     i1 = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(lbl, "togglePause:", "")
                     i1.setTarget_(_menu_delegate)
+                    i_sig = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Insert Word Signature", "insertSignature:", "")
+                    i_sig.setTarget_(_menu_delegate)
+                    i_sig.setEnabled_(bool(on_signature) and not paused_ref[0])
                     i2 = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Quit", "quit:", "")
                     i2.setTarget_(_menu_delegate)
                     menu.addItem_(i1)
+                    menu.addItem_(i_sig)
                     menu.addItem_(NSMenuItem.separatorItem())
                     menu.addItem_(i2)
                     NSMenu.popUpContextMenu_withEvent_forView_(menu, event, self.contentView())
@@ -153,6 +161,8 @@ def run_pet_loop(on_capture, paused_ref: list, ui_queue: queue.Queue,
                 _menu_delegate.togglePause_(None)
             elif kc == 103 and ctrl and not paused_ref[0]:  # Ctrl+F11 — capture
                 threading.Timer(1.0, on_capture).start()
+            elif kc == 109 and ctrl and not paused_ref[0] and on_signature:  # Ctrl+F10 — Word signature
+                threading.Timer(0.1, on_signature).start()
         except Exception as e:
             print(f'hotkey error: {e}', flush=True)
     _monitor = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(NSEventMaskKeyDown, _on_global_key)

@@ -50,7 +50,7 @@ Pause JARVIS anytime to prevent sensitive content from being captured. Resume wi
 
 - macOS
 - Python 3.12+
-- An [Anthropic API key](https://console.anthropic.com/)
+- An [OpenAI API key](https://platform.openai.com/api-keys)
 
 ---
 
@@ -69,10 +69,11 @@ pip install -r requirements.txt
 Set your API key:
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
+export OPENAI_API_KEY=sk-...
 ```
 
 To persist it, add the line above to your `~/.zshrc` or `~/.bash_profile`.
+Optionally set `OPENAI_MODEL` to override the default model.
 
 ---
 
@@ -89,8 +90,23 @@ JARVIS runs in the background and proactively surfaces help as you work.
 | Action | Shortcut | Mouse |
 |--------|----------|-------|
 | Immediate response | `Ctrl + F11` | Left-click pet |
+| Insert Word signature | `Ctrl + F10` | Right-click pet → Insert Word Signature |
 | Pause / Resume | `Ctrl + F12` | Right-click pet → Pause/Resume |
 | Quit | — | Right-click pet → Quit |
+
+### Word Signature
+
+With a Microsoft Word document frontmost, use `Ctrl + F10` or the pet menu to insert your signature image near a configured signature label. By default JARVIS uses `test/signature.jpg`, searches for common labels such as `Signature of the Student`, moves two tab stops from the label, pastes the image, and sizes it to 1.45 inches wide.
+
+Optional environment variables:
+
+| Variable | Default |
+|----------|---------|
+| `JARVIS_SIGNATURE_PATH` | `test/signature.jpg` |
+| `JARVIS_SIGNATURE_LABELS` | `Signature of the Student|Student Signature|Signature` |
+| `JARVIS_SIGNATURE_TABS` | `2` |
+| `JARVIS_SIGNATURE_WIDTH_IN` | `1.45` |
+| `JARVIS_SIGNATURE_SAVE` | `false` |
 
 ### Overlay Buttons
 
@@ -105,7 +121,7 @@ JARVIS runs in the background and proactively surfaces help as you work.
 
 When you copy a term and get an explanation, JARVIS maintains conversation history for follow-ups:
 
-- **Turn 1** — JARVIS sends your screenshot + the copied text to Claude and displays the response.
+- **Turn 1** — JARVIS sends your screenshot + the copied text to OpenAI and displays the response.
 - **More / Chat** — subsequent turns send only the conversation history (no image re-sent), so the model stays focused on the copied term rather than re-analyzing the screen.
 
 This means you can ask "give me an example" or "explain it differently" and get a contextually aware reply, not a generic screen description. Each chat turn appends to the history, so the full thread is preserved for the duration of the overlay.
@@ -114,7 +130,7 @@ This means you can ask "give me an example" or "explain it differently" and get 
 
 ## Privacy
 
-All processing happens on your machine except for screenshots sent to the Anthropic API. Screenshots are only sent when:
+All processing happens on your machine except for screenshots sent to the OpenAI API. Screenshots are only sent when:
 - Your screen is static for 5+ seconds (stuck-screen trigger)
 - You switch app context and settle on a new screen (activity summary)
 
@@ -137,4 +153,4 @@ No data is sent to any other service.
 
 **`list index out of range` on capture** — your display went to sleep; JARVIS auto-resumes on wake.
 
-**API errors** — verify `ANTHROPIC_API_KEY` is set and valid.
+**API errors** — verify `OPENAI_API_KEY` is set and valid.

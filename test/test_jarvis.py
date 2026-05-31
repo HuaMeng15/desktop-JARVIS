@@ -8,6 +8,7 @@ import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -180,9 +181,9 @@ class TestStats:
         assert Image.open(pngs[0]).size == (64, 64)
 
     def test_cost_calculation(self, s):
-        # 1M input @ $15 + 1M output @ $75 = $90
+        # 1M input @ $0.25 + 1M output @ $2 = $2.25
         s.log_llm_call("test", 0, 0, 1_000_000, 1_000_000, response_text="x")
-        assert abs(float(self._rows(s)[0]["cost_usd"]) - 90.0) < 0.01
+        assert abs(float(self._rows(s)[0]["cost_usd"]) - 2.25) < 0.01
 
     def test_selected_text_truncated_to_200(self, s):
         s.log_llm_call("clipboard", 0, 0, 10, 5, response_text="x",
@@ -223,6 +224,7 @@ class TestStats:
 
 def _mock_msg(text: str, in_tok=10, out_tok=5):
     msg = MagicMock()
+    msg.output_text = text
     msg.content = [MagicMock(text=text)]
     msg.usage.input_tokens = in_tok
     msg.usage.output_tokens = out_tok
@@ -235,7 +237,7 @@ class TestResponse:
         payload = json.dumps({"needs_hint": True, "hint": "HPCC is a cluster",
                               "confidence": "high", "reason": "concept", "category": "other"})
         with patch("response._client") as c:
-            c.messages.create.return_value = _mock_msg(payload)
+            c.responses.create.return_value = _mock_msg(payload)
             result = get_selection_hint("HPCC")
         assert result.needs_hint is True
         assert result.hint == "HPCC is a cluster"
@@ -247,17 +249,17 @@ class TestResponse:
         payload = json.dumps({"needs_hint": True, "hint": "x",
                               "confidence": "high", "reason": "concept", "category": "other"})
         with patch("response._client") as c:
-            c.messages.create.return_value = _mock_msg(payload)
+            c.responses.create.return_value = _mock_msg(payload)
             get_selection_hint("gradient descent")
-        call_args = c.messages.create.call_args
-        messages = call_args.kwargs.get("messages", call_args.args[0] if call_args.args else [])
+        call_args = c.responses.create.call_args
+        messages = call_args.kwargs.get("input", call_args.args[0] if call_args.args else [])
         assert "gradient descent" in str(messages)
 
     def test_get_selection_hint_strips_markdown_fences(self):
         from response import get_selection_hint
         payload = '```json\n{"needs_hint":true,"hint":"x","confidence":"high","reason":"r","category":"other"}\n```'
         with patch("response._client") as c:
-            c.messages.create.return_value = _mock_msg(payload)
+            c.responses.create.return_value = _mock_msg(payload)
             result = get_selection_hint("test")
         assert result.hint == "x"
 
@@ -266,10 +268,10 @@ class TestResponse:
         payload = json.dumps({"needs_hint": True, "hint": "fix it",
                               "confidence": "high", "reason": "r", "category": "coding"})
         with patch("response._client") as c:
-            c.messages.create.return_value = _mock_msg(payload)
+            c.responses.create.return_value = _mock_msg(payload)
             get_hint(_b64(), 100, 200, 1920, 1080, 5)
-        call_args = c.messages.create.call_args
-        messages = call_args.kwargs.get("messages", [])
+        call_args = c.responses.create.call_args
+        messages = call_args.kwargs.get("input", [])
         content_str = str(messages)
         assert "100" in content_str   # cursor x
         assert "200" in content_str   # cursor y
@@ -281,7 +283,7 @@ class TestResponse:
         payload = json.dumps({"needs_hint": False, "hint": "",
                               "confidence": "low", "reason": "idle", "category": "other"})
         with patch("response._client") as c:
-            c.messages.create.return_value = _mock_msg(payload)
+            c.responses.create.return_value = _mock_msg(payload)
             result = get_hint(_b64(), 0, 0, 1920, 1080, 5)
         assert result.needs_hint is False
         assert result.confidence == "low"
@@ -289,11 +291,52 @@ class TestResponse:
     def test_get_hint_handles_malformed_json(self):
         from response import get_hint
         with patch("response._client") as c:
-            c.messages.create.return_value = _mock_msg("not json at all")
+            c.responses.create.return_value = _mock_msg("not json at all")
             result = get_hint(_b64(), 0, 0, 1920, 1080, 5)
         # Should not raise; returns defaults
         assert result.needs_hint is False
         assert result.hint == ""
+
+    def test_get_response_streams_text_and_usage(self):
+        from response import get_response
+        final = SimpleNamespace(usage=SimpleNamespace(input_tokens=11, output_tokens=7))
+        events = [
+            SimpleNamespace(type="response.output_text.delta", delta="hel"),
+            SimpleNamespace(type="response.output_text.delta", delta="lo"),
+            SimpleNamespace(type="response.completed", response=final),
+        ]
+        with patch("response._client") as c:
+            c.responses.create.return_value = iter(events)
+            text, in_tok, out_tok, ttft, total = get_response(None, prompt="Hi")
+        assert text == "hello"
+        assert in_tok == 11
+        assert out_tok == 7
+        assert ttft <= total
+
+    def test_legacy_history_is_normalized_for_openai(self):
+        from response import get_response
+        history = [{
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": _b64()}},
+                {"type": "text", "text": "What is here?"},
+            ],
+        }, {
+            "role": "assistant",
+            "content": "A desktop screenshot.",
+        }]
+        final = SimpleNamespace(usage=SimpleNamespace(input_tokens=1, output_tokens=1))
+        events = [
+            SimpleNamespace(type="response.output_text.delta", delta="ok"),
+            SimpleNamespace(type="response.completed", response=final),
+        ]
+        with patch("response._client") as c:
+            c.responses.create.return_value = iter(events)
+            get_response(None, prompt="More", history=history)
+        sent = c.responses.create.call_args.kwargs["input"]
+        assert sent[0]["content"][0]["type"] == "input_image"
+        assert sent[0]["content"][1]["type"] == "input_text"
+        assert sent[1]["role"] == "assistant"
 
     def test_hint_result_fields(self):
         from response import HintResult

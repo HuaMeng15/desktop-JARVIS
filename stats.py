@@ -9,9 +9,9 @@ SCREENSHOTS_DIR = STATS_DIR / "screenshots"
 RESPONSES_DIR = STATS_DIR / "responses"
 LLM_LOG_FILE = STATS_DIR / "llm_calls.csv"
 
-# claude-opus-4-6 pricing (per million tokens)
-_INPUT_COST_PER_M = 15.0
-_OUTPUT_COST_PER_M = 75.0
+# gpt-5-mini pricing (per million tokens)
+_INPUT_COST_PER_M = 0.25
+_OUTPUT_COST_PER_M = 2.0
 
 _LOG_FIELDS = [
     "timestamp", "screenshot_file",
@@ -184,4 +184,3 @@ def log_activity_call(
     with open(ACTIVITY_LOG_FILE, "a", newline="") as f:
         csv.DictWriter(f, fieldnames=_ACTIVITY_FIELDS).writerow(row)
     print(f"[activity] task={task_id[:8]} app={app} total={total_ms:.0f}ms cost=${cost:.4f}")
-
